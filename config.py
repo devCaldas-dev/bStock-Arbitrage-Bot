@@ -55,6 +55,26 @@ SLIPPAGE_PCT: Decimal = Decimal("0.10")
 # Tiempo de enfriamiento entre señales del mismo tipo en segundos (5 minutos)
 SIGNAL_COOLDOWN_SECONDS: int = 300
 
+# --- Parámetros de Ejecución y Monitoreo Autónomo ---
+
+# Contrato oficial de USDT en BNB Smart Chain (18 decimales)
+USDT_ADDRESS: str = "0x55d398326f99059fF775485246999027B3197955"
+
+# SwapRouter oficial de PancakeSwap V3 en BSC Mainnet
+PANCAKE_V3_SWAP_ROUTER: str = "0x1b81D678ffb9C0263b24A97847620C99d213eB14"
+
+# Lista de acciones tokenizadas a monitorear en el bucle principal
+MONITORED_TICKERS: list[str] = ["TSLA", "NVDA", "AAPL", "MSFT", "GOOGL"]
+
+# Intervalo entre ciclos de escaneo en segundos
+POLL_INTERVAL_SECONDS: int = 60
+
+# Ruta del archivo de registro histórico de señales emitidas
+SIGNALS_LOG_PATH: str = "signals_log.json"
+
+# Dirección receptora por defecto para simulación de swaps
+DEFAULT_RECIPIENT: str = os.getenv("DEFAULT_RECIPIENT", "0x0000000000000000000000000000000000000001")
+
 # --- Credenciales y Autenticación ---
 
 # Clave de API para Ondo Finance

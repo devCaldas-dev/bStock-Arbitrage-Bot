@@ -56,6 +56,9 @@ arbitrage-bot/
 ├── stock_price_fetcher.py# Cotizaciones bursátiles desde Yahoo Finance
 ├── web3_price_fetcher.py # Lectura on-chain en PancakeSwap V2 y V3
 ├── strategy.py           # Motor de decisión y cálculo de rentabilidad
+├── executor.py           # Construcción, simulación y registro de swaps
+├── main.py               # Loop autónomo de monitoreo
+├── test_executor.py      # Pruebas del executor y calldata V3
 ├── requirements.txt      # Dependencias del proyecto
 ├── test_data_fetcher.py  # Pruebas de extracción de datos y Web3
 ├── test_strategy.py      # Pruebas de lógica de estrategia y cooldown
@@ -102,6 +105,36 @@ ONDO_API_KEY=tu_api_key_de_ondo_aqui
 ```
 
 > **Nota:** Si no dispones de una clave de Ondo de inmediato, el sistema utilizará Binance como respaldo y ejecutará las pruebas unitarias completas simuladas (mocks).
+
+### Ejecutar el bot
+
+El bot solo construye y simula swaps con `eth_call`; nunca envía transacciones.
+Configura opcionalmente `BSC_RPC_URL` y `DEFAULT_RECIPIENT` en `.env`, y ejecuta:
+
+```bash
+python main.py
+```
+
+Para una ejecución controlada (útil para validar el loop sin dejar un proceso
+continuo), pasa el número de iteraciones como primer argumento:
+
+```bash
+python main.py 2
+```
+
+El intervalo normal es `POLL_INTERVAL_SECONDS` (60 segundos). Los eventos BUY
+se agregan a `signals_log.json`; el detalle de ejecución se guarda en `bot.log`.
+El archivo de señales contiene el calldata y el resultado de la simulación, pero
+no se transmite ni firma ninguna transacción.
+
+### Pruebas del executor
+
+```bash
+python -m unittest test_executor.py -v
+```
+
+La prueba en vivo opcional de `test_executor.py` consulta precios reales y solo
+muestra el calldata generado para TSLAB; no publica la transacción.
 
 ---
 

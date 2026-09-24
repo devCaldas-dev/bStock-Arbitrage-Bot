@@ -19,6 +19,11 @@ ENV/
 .coverage
 htmlcov/
 
+# Logs del bot y registros de transacciones
+bot.log
+*.log
+signals_log.json
+
 # IDEs
 .vscode/
 .idea/
