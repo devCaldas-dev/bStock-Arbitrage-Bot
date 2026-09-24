@@ -6,26 +6,24 @@ El objetivo es detectar oportunidades e ineficiencias de arbitraje de precios en
 
 ---
 
-## Módulo 1: `data_fetcher.py` y `web3_price_fetcher.py`
+## Módulo 1: `data_fetcher.py`, `web3_price_fetcher.py` y `stock_price_fetcher.py`
 
-Este módulo se encarga de extraer cotizaciones de Ondo Finance, metadatos del catálogo de Binance Web3 y precios en tiempo real on-chain directamente desde los pools de liquidez en BNB Smart Chain (PancakeSwap V2).
+Consolida la información necesaria para detectar ineficiencias de arbitraje entre el mercado bursátil tradicional y BNB Smart Chain (BSC DEX).
 
-### Fuentes de Datos
+### Fuentes de Datos y Cascada de Precios
 
-1. **Web3 Directo - PancakeSwap V2 DEX** (`web3_price_fetcher.py`):
-   - Conexión vía RPC a BNB Smart Chain (`https://bsc-dataseed.binance.org/`).
-   - Consulta el contrato Factory V2 (`0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73`) para localizar el pool del bStock contra USDT (`0x55d398326f99059fF775485246999027B3197955`).
-   - Lee `getReserves()` on-chain y calcula el precio spot real del bStock en USDT con precisión `Decimal`.
+1. **Precio Subyacente (Bolsa de EE.UU. / Wall Street)**:
+   - **Yahoo Finance (`stock_price_fetcher.py`)**: Fuente primaria en tiempo real con `fast_info['last_price']`.
+   - **Ondo Finance API (`fetch_ondo_price`)**: Respaldo secundario institucional si se dispone de `ONDO_API_KEY`.
 
-2. **Binance Web3 API - Catálogo RWA** (GET `.../stock/detail/list/ai`):
-   - Catálogo de ~1925 activos tokenizados en BNB Smart Chain (`chainId=56`).
-   - Provee direcciones de contrato (`contractAddress`) y factores multiplicadores (`multiplier`).
-   - Implementa **caché en memoria con TTL de 1 hora** (`BINANCE_CATALOG_TTL = 3600`).
+2. **Precio On-Chain Real (BSC DEX)**:
+   - **PancakeSwap V3 (`fetch_onchain_price_v3`)**: Fuente primaria prioritaria por profundidad de liquidez ($215K-$564K USD). Evalúa tiers [500, 2500, 10000] y deriva el precio desde `slot0().sqrtPriceX96` con la fórmula:
+     $$\text{ratio} = \left(\frac{\text{sqrtPriceX96}}{2^{96}}\right)^2$$
+   - **PancakeSwap V2 (`fetch_onchain_price_v2`)**: Fallback secundario con **filtro de liquidez mínima ($50,000 USD)** para evitar precios distorsionados de pools ilíquidos.
+   - **Ondo Finance Primary (`primary_price`)**: Fallback terciario ajustado por multiplicador.
 
-3. **Ondo Finance API** (GET `https://api.gm.ondo.finance/v1/assets/{symbol}/prices/latest`):
-   - Provee la cotización oficial de la acción real subyacente en Wall Street (`underlyingMarket.price`).
-   - Requiere autenticación mediante el header `x-api-key`.
-   - Si no está disponible (ej. sin API Key o fuera de horario bursátil), el bot puede operar obteniendo el precio on-chain directamente vía Web3.
+3. **Metadatos y Factores Multiplicadores**:
+   - **Binance Web3 API (`fetch_binance_catalog`)**: Catálogo RWA en BSC con caché TTL de 1 hora. Identifica la dirección del contrato inteligente y el multiplicador de conversión.
 
 ---
 
@@ -114,13 +112,17 @@ La función `fetch_prices(ticker, ondo_symbol)` retorna un diccionario estandari
 ```python
 {
     "symbol": "TSLA",
-    "underlying_price": Decimal("380.00"),                              # Precio en Wall Street (Ondo) o None si mercado cerrado
-    "onchain_price": Decimal("382.0279455457876201125346158"),         # Precio en PancakeSwap V2 ajustado por multiplicador
-    "contract_address": "0x5b1910eaad6450e50f816082aa078c41f10c292f", # Contrato TSLAB en BSC
-    "pair_address": "0xAc5cb50d90A7a2Bc5DEF56194bE8D93C905bCD5F",     # Pool TSLAB/USDT en PancakeSwap V2
-    "multiplier": Decimal("1.000000000000000000"),                     # Factor de conversión (Binance)
-    "ondo_timestamp": 1755888858907,                                    # Timestamp de Ondo (o None)
+    "underlying_price": Decimal("380.1199951171875"),                  # Precio en Wall Street (Yahoo Finance)
+    "onchain_price": Decimal("379.42021876694123945299467952202429"),  # Precio spot PancakeSwap V3 (fee 2500)
+    "spread_usd": Decimal("-0.6997763502462605470053204779757"),        # onchain_price - underlying_price
+    "spread_pct": Decimal("-0.184093538681259303753074007956"),         # Prima/Descuento en %
+    "contract_address": "0x5b1910eaad6450e50f816082aa078c41f10c292f",  # Contrato TSLAB en BSC
+    "pool_address": "0xB0f5E5400E8F0F7C242F2b7740C004f020579c41",      # Pool V3 TSLAB/USDT
+    "dex": "pancakeswap_v3",                                            # Protocolo DEX utilizado
+    "multiplier": Decimal("1.000000000000000000"),                      # Factor de conversión (Binance)
+    "ondo_timestamp": None,
     "sources": {
+        "yfinance": True,
         "ondo": False,
         "binance": True,
         "web3": True

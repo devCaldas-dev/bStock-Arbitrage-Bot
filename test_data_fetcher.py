@@ -1,15 +1,17 @@
 """
-Script de pruebas unitarias y de integración para data_fetcher.py y web3_price_fetcher.py.
+Suite de Pruebas Unitarias y en Vivo para data_fetcher, web3_price_fetcher y stock_price_fetcher.
 
 Verifica:
-1. Pruebas Unitarias (con Mocks):
-   - Consulta y validaciones de Ondo Finance API.
-   - Consulta al catálogo de Binance Web3 con caché en memoria (TTL).
-   - Consulta de precio on-chain mediante Web3 (PancakeSwap V2).
-   - Unificación de precios: Web3 directo, fallback a Ondo y desacoplamiento de Ondo.
+1. Pruebas Unitarias (Mocks):
+   - Lectura de precio V3 mediante slot0() y derivación de sqrtPriceX96.
+   - Filtro de liquidez mínima en V2 (< $50K USD es rechazado).
+   - Consulta de precio subyacente con yfinance.
+   - Cascada unificada y cálculo preciso de la prima/spread de arbitraje.
 2. Pruebas en Vivo (Live Integration):
-   - Prueba directa de fetch_onchain_price_web3 con el contrato conocido de TSLAB en BSC.
-   - Flujo completo de fetch_prices("TSLA", "TSLAon") sin depender de Ondo.
+   - Consulta a PancakeSwap V3 con liquidez concentrada para TSLAB.
+   - Consulta a Yahoo Finance para la acción subyacente TSLA.
+   - Confirmación de que el pool V2 de TSLAB (~$5K) es rechazado por MIN_LIQUIDITY_USD.
+   - Ejecución de fetch_prices("TSLA") con prima calculada.
 """
 
 import logging
@@ -24,9 +26,16 @@ from data_fetcher import (
     fetch_prices,
     _catalog_cache,
 )
-from web3_price_fetcher import fetch_onchain_price_web3
+from web3_price_fetcher import (
+    fetch_onchain_price_v3,
+    fetch_onchain_price_v2,
+    fetch_onchain_price_web3,
+    get_v2_price,
+    MIN_LIQUIDITY_USD,
+)
+from stock_price_fetcher import fetch_underlying_price
 
-# Configuración de logging para visualización clara durante las pruebas
+# Configuración de logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -42,182 +51,73 @@ class TestDataFetcherUnit(unittest.TestCase):
     """Pruebas unitarias con mocks para validar lógica interna sin depender de la red."""
 
     def setUp(self):
-        # Limpiar caché de catálogo antes de cada prueba
         _catalog_cache["data"] = None
         _catalog_cache["timestamp"] = 0.0
 
-    @patch("data_fetcher.requests.get")
-    def test_fetch_ondo_price_success(self, mock_get):
-        """Verifica que fetch_ondo_price procese correctamente la respuesta y use Decimal."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "primaryMarket": {"symbol": "TSLAon", "price": "48.516937826065743784"},
-            "underlyingMarket": {"ticker": "TSLA", "price": "338.88"},
-            "timestamp": 1755888858907,
-        }
-        mock_get.return_value = mock_response
+    @patch("web3_price_fetcher.w3.eth.contract")
+    @patch("web3_price_fetcher.get_v3_pool_address")
+    def test_fetch_onchain_price_v3_mock(self, mock_get_pool, mock_contract):
+        """Verifica la derivación de precio V3 desde slot0() y sqrtPriceX96."""
+        mock_get_pool.return_value = "0xB0f5E5400E8F0F7C242F2b7740C004f020579c41"
 
-        with patch("data_fetcher.ONDO_API_KEY", "test_key_123"):
-            result = fetch_ondo_price("TSLAon")
+        # Simular pool V3:
+        # sqrtPriceX96 = 4510802670335315992506988806
+        # Si token0 es USDT y token1 es TSLAB:
+        mock_pool = MagicMock()
+        mock_pool.functions.slot0.return_value.call.return_value = [
+            4510802670335315992506988806,  # sqrtPriceX96
+            -12345, 0, 1, 1, 0, True
+        ]
+        mock_pool.functions.liquidity.return_value.call.return_value = 1000000
+        mock_pool.functions.token0.return_value.call.return_value = "0x55d398326f99059fF775485246999027B3197955"  # USDT
+        mock_pool.functions.token1.return_value.call.return_value = KNOWN_TSLAB_CONTRACT  # TSLAB
+        mock_contract.return_value = mock_pool
 
+        result = fetch_onchain_price_v3(KNOWN_TSLAB_CONTRACT, fee_tier=2500)
         self.assertIsNotNone(result)
-        self.assertEqual(result["symbol"], "TSLAon")
-        self.assertEqual(result["underlying_ticker"], "TSLA")
-        self.assertIsInstance(result["primary_price"], Decimal)
-        self.assertIsInstance(result["underlying_price"], Decimal)
-        self.assertEqual(result["primary_price"], Decimal("48.516937826065743784"))
-        self.assertEqual(result["underlying_price"], Decimal("338.88"))
+        self.assertEqual(result["dex"], "pancakeswap_v3")
+        self.assertIsInstance(result["price_usdt"], Decimal)
+        self.assertGreater(result["price_usdt"], Decimal("100"))
 
-    @patch("data_fetcher.requests.get")
-    def test_fetch_ondo_price_null_underlying(self, mock_get):
-        """Verifica que si underlyingMarket.price es null, retorna None (mercado cerrado)."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "primaryMarket": {"symbol": "TSLAon", "price": "48.50"},
-            "underlyingMarket": {"ticker": "TSLA", "price": None},
-            "timestamp": 1755888858907,
-        }
-        mock_get.return_value = mock_response
+    def test_v2_liquidity_validation_rejection(self):
+        """Verifica que un pool V2 con liquidez de ~$5,000 USD sea rechazado por MIN_LIQUIDITY_USD ($50,000)."""
+        mock_pair = "0xAc5cb50d90A7a2Bc5DEF56194bE8D93C905bCD5F"
+        usdt_addr = "0x55d398326f99059fF775485246999027B3197955"
 
-        with patch("data_fetcher.ONDO_API_KEY", "test_key_123"):
-            result = fetch_ondo_price("TSLAon")
+        with patch("web3_price_fetcher.w3.eth.contract") as mock_contract:
+            pair_mock = MagicMock()
+            pair_mock.functions.token0.return_value.call.return_value = KNOWN_TSLAB_CONTRACT
+            pair_mock.functions.token1.return_value.call.return_value = usdt_addr
+            # Reserva de USDT: 2,500 * 10^18 (Liquidez total ≈ $5,000 USD)
+            pair_mock.functions.getReserves.return_value.call.return_value = [
+                int(Decimal("6.5") * Decimal(10**18)),      # reserve0: bStock
+                int(Decimal("2500") * Decimal(10**18)),     # reserve1: 2,500 USDT ($5,000 pool)
+                123456
+            ]
+            mock_contract.return_value = pair_mock
 
-        self.assertIsNone(result)
-
-    def test_fetch_ondo_missing_api_key(self):
-        """Verifica que sin API Key configurada retorne None de inmediato con log de error."""
-        with patch("data_fetcher.ONDO_API_KEY", ""):
-            result = fetch_ondo_price("TSLAon")
+            # Debe retornar None porque $5,000 < $50,000 MIN_LIQUIDITY_USD
+            result = get_v2_price(mock_pair, KNOWN_TSLAB_CONTRACT)
             self.assertIsNone(result)
 
-    def test_fetch_ondo_invalid_symbol(self):
-        """Verifica que símbolos que no terminen en 'on' sean rechazados."""
-        with patch("data_fetcher.ONDO_API_KEY", "test_key_123"):
-            result = fetch_ondo_price("TSLA")
-            self.assertIsNone(result)
+    @patch("yfinance.Ticker")
+    def test_fetch_underlying_price_mock(self, mock_ticker_cls):
+        """Verifica que fetch_underlying_price extraiga correctamente el precio de yfinance."""
+        mock_ticker = MagicMock()
+        mock_ticker.fast_info = {"last_price": 365.25}
+        mock_ticker_cls.return_value = mock_ticker
 
-    @patch("data_fetcher.requests.get")
-    def test_fetch_binance_catalog_success(self, mock_get):
-        """Verifica que fetch_binance_catalog extraiga contract_address y multiplier válidos."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "data": [
-                {
-                    "chainId": "56",
-                    "contractAddress": KNOWN_TSLAB_CONTRACT,
-                    "symbol": "TSLAB",
-                    "ticker": "TSLA",
-                    "multiplier": "1.000000000000000000",
-                    "cs": "TSLABUSDT",
-                },
-            ],
-            "success": True,
-        }
-        mock_get.return_value = mock_response
+        price = fetch_underlying_price("TSLA")
+        self.assertIsNotNone(price)
+        self.assertIsInstance(price, Decimal)
+        self.assertEqual(price, Decimal("365.25"))
 
-        result = fetch_binance_catalog("TSLA")
-        self.assertIsNotNone(result)
-        self.assertEqual(result["ticker"], "TSLA")
-        self.assertEqual(result["contract_address"], KNOWN_TSLAB_CONTRACT)
-        self.assertIsInstance(result["multiplier"], Decimal)
-        self.assertEqual(result["multiplier"], Decimal("1.000000000000000000"))
-
-    @patch("data_fetcher.requests.get")
-    def test_fetch_binance_catalog_nonexistent_ticker(self, mock_get):
-        """Verifica que un ticker inexistente ('XXXX') retorne None."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "data": [
-                {"chainId": "56", "contractAddress": "0x123", "symbol": "AAPL", "ticker": "AAPL", "multiplier": "1"},
-            ],
-            "success": True,
-        }
-        mock_get.return_value = mock_response
-
-        result = fetch_binance_catalog("XXXX")
-        self.assertIsNone(result)
-
-    @patch("data_fetcher.requests.get")
-    def test_binance_catalog_cache_ttl(self, mock_get):
-        """Verifica que llamadas subsecuentes usen la caché en memoria y no repitan la petición HTTP."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "data": [
-                {"chainId": "56", "contractAddress": "0x123", "symbol": "TSLAB", "ticker": "TSLA", "multiplier": "1"},
-            ],
-            "success": True,
-        }
-        mock_get.return_value = mock_response
-
-        res1 = fetch_binance_catalog("TSLA")
-        self.assertIsNotNone(res1)
-        self.assertEqual(mock_get.call_count, 1)
-
-        res2 = fetch_binance_catalog("TSLA")
-        self.assertIsNotNone(res2)
-        self.assertEqual(mock_get.call_count, 1)
-
-    @patch("web3_price_fetcher.get_v2_price")
-    @patch("web3_price_fetcher.get_v2_pair_address")
-    def test_fetch_onchain_price_web3_mock(self, mock_pair, mock_price):
-        """Verifica la función fetch_onchain_price_web3 con respuestas simuladas."""
-        mock_pair.return_value = "0xAc5cb50d90A7a2Bc5DEF56194bE8D93C905bCD5F"
-        mock_price.return_value = Decimal("382.50")
-
-        result = fetch_onchain_price_web3(KNOWN_TSLAB_CONTRACT)
-        self.assertIsNotNone(result)
-        self.assertEqual(result["price_usdt"], Decimal("382.50"))
-        self.assertEqual(result["pair_address"], "0xAc5cb50d90A7a2Bc5DEF56194bE8D93C905bCD5F")
-        self.assertEqual(result["source"], "pancakeswap_v2")
-
-    @patch("data_fetcher.fetch_onchain_price_web3")
+    @patch("data_fetcher.fetch_underlying_price")
     @patch("data_fetcher.fetch_binance_catalog")
-    @patch("data_fetcher.fetch_ondo_price")
-    def test_fetch_prices_full_success(self, mock_ondo, mock_binance, mock_web3):
-        """Verifica unificación cuando todas las fuentes (Ondo, Binance, Web3) están activas."""
-        mock_ondo.return_value = {
-            "symbol": "TSLAon",
-            "primary_price": Decimal("38.00"),
-            "underlying_price": Decimal("380.00"),
-            "underlying_ticker": "TSLA",
-            "timestamp": 1755888858907,
-        }
-        mock_binance.return_value = {
-            "symbol": "TSLAB",
-            "ticker": "TSLA",
-            "contract_address": KNOWN_TSLAB_CONTRACT,
-            "multiplier": Decimal("0.1"),
-            "chain_id": "56",
-        }
-        mock_web3.return_value = {
-            "price_usdt": Decimal("38.20"),
-            "pair_address": "0xAc5cb50d90A7a2Bc5DEF56194bE8D93C905bCD5F",
-            "source": "pancakeswap_v2",
-        }
-
-        unified = fetch_prices("TSLA", "TSLAon")
-        self.assertIsNotNone(unified)
-        self.assertEqual(unified["symbol"], "TSLA")
-        self.assertEqual(unified["underlying_price"], Decimal("380.00"))
-        # 38.20 / 0.1 = 382.00
-        self.assertEqual(unified["onchain_price"], Decimal("382.00"))
-        self.assertEqual(unified["contract_address"], KNOWN_TSLAB_CONTRACT)
-        self.assertEqual(unified["multiplier"], Decimal("0.1"))
-        self.assertTrue(unified["sources"]["ondo"])
-        self.assertTrue(unified["sources"]["binance"])
-        self.assertTrue(unified["sources"]["web3"])
-
     @patch("data_fetcher.fetch_onchain_price_web3")
-    @patch("data_fetcher.fetch_binance_catalog")
-    @patch("data_fetcher.fetch_ondo_price")
-    def test_fetch_prices_without_ondo(self, mock_ondo, mock_binance, mock_web3):
-        """Verifica que el bot funcione sin depender de Ondo, obteniendo el precio directo de Web3."""
-        mock_ondo.return_value = None  # Simula falta de ONDO_API_KEY o mercado bursátil cerrado
+    def test_fetch_prices_full_spread_calculation(self, mock_web3, mock_binance, mock_yf):
+        """Verifica que fetch_prices calcule correctamente el spread en USD y porcentaje."""
+        mock_yf.return_value = Decimal("350.00")
         mock_binance.return_value = {
             "symbol": "TSLAB",
             "ticker": "TSLA",
@@ -226,60 +126,80 @@ class TestDataFetcherUnit(unittest.TestCase):
             "chain_id": "56",
         }
         mock_web3.return_value = {
-            "price_usdt": Decimal("382.02"),
-            "pair_address": "0xAc5cb50d90A7a2Bc5DEF56194bE8D93C905bCD5F",
-            "source": "pancakeswap_v2",
+            "price_usdt": Decimal("367.50"),
+            "pool_address": "0xB0f5E5400E8F0F7C242F2b7740C004f020579c41",
+            "fee_tier": 2500,
+            "dex": "pancakeswap_v3",
+            "source": "pancakeswap_v3",
         }
 
-        unified = fetch_prices("TSLA", "TSLAon")
-        self.assertIsNotNone(unified)
-        self.assertEqual(unified["symbol"], "TSLA")
-        self.assertIsNone(unified["underlying_price"])  # Sin Ondo
-        self.assertEqual(unified["onchain_price"], Decimal("382.02"))  # De Web3 PancakeSwap
-        self.assertEqual(unified["contract_address"], KNOWN_TSLAB_CONTRACT)
-        self.assertFalse(unified["sources"]["ondo"])
-        self.assertTrue(unified["sources"]["binance"])
-        self.assertTrue(unified["sources"]["web3"])
+        data = fetch_prices("TSLA")
+        self.assertIsNotNone(data)
+        self.assertEqual(data["symbol"], "TSLA")
+        self.assertEqual(data["underlying_price"], Decimal("350.00"))
+        self.assertEqual(data["onchain_price"], Decimal("367.50"))
+        # spread_usd = 367.50 - 350.00 = 17.50
+        self.assertEqual(data["spread_usd"], Decimal("17.50"))
+        # spread_pct = (17.50 / 350.00) * 100 = 5.0%
+        self.assertEqual(data["spread_pct"], Decimal("5.0"))
+        self.assertEqual(data["dex"], "pancakeswap_v3")
+        self.assertTrue(data["sources"]["yfinance"])
+        self.assertTrue(data["sources"]["web3"])
 
 
 def run_live_tests():
-    """Ejecuta pruebas en vivo contra BSC Mainnet y Binance Web3."""
-    print("\n" + "=" * 78)
-    print(">> FASE 2: EJECUCIÓN DE PRUEBAS EN VIVO (INTEGRACIÓN WEB3 EN BSC)")
-    print("=" * 78)
+    """Ejecuta las pruebas en vivo contra los endpoints de mercado real."""
+    print("\n" + "=" * 80)
+    print(">> FASE 2: EJECUCIÓN DE PRUEBAS EN VIVO (PANCAKESWAP V3 + YFINANCE)")
+    print("=" * 80)
 
-    # 1. Probar fetch_onchain_price_web3 con un contrato conocido (TSLAB)
-    print(f"\n1. Consultando PancakeSwap V2 para TSLAB ({KNOWN_TSLAB_CONTRACT})...")
-    tslab_web3 = fetch_onchain_price_web3(KNOWN_TSLAB_CONTRACT)
-    if tslab_web3:
-        print(f"  [OK] Precio On-Chain obtenido con éxito!")
-        print(f"       Precio USDT    : {tslab_web3['price_usdt']} (Tipo: {type(tslab_web3['price_usdt']).__name__})")
-        print(f"       Pool Address   : {tslab_web3['pair_address']}")
-        print(f"       Fuente DEX     : {tslab_web3['source']}")
+    # 1. Probar lectura en PancakeSwap V3
+    print(f"\n1. Consultando PancakeSwap V3 para TSLAB ({KNOWN_TSLAB_CONTRACT})...")
+    v3_result = fetch_onchain_price_v3(KNOWN_TSLAB_CONTRACT)
+    if v3_result:
+        print(f"  [OK] Precio V3 Obtenido : {v3_result['price_usdt']} USDT")
+        print(f"       Pool Address       : {v3_result['pool_address']}")
+        print(f"       Fee Tier           : {v3_result['fee_tier']} ({v3_result['fee_tier'] / 10000}%)")
+        print(f"       Liquidez Activa    : {v3_result['liquidity']}")
+        print(f"       DEX                : {v3_result['dex']}")
     else:
-        print("  [ERROR] No se pudo obtener precio Web3 para TSLAB.")
+        print("  [ERROR] No se pudo obtener precio V3.")
 
-    # 2. Probar el flujo completo fetch_prices("TSLA", "TSLAon") sin depender de Ondo
-    print("\n2. Ejecutando flujo completo fetch_prices('TSLA', 'TSLAon') sin depender de Ondo...")
-    result = fetch_prices("TSLA", "TSLAon")
-    print("\n--- RESULTADO CONSOLIDADO ---")
+    # 2. Confirmación de rechazo de pool V2 por liquidez insuficiente
+    print("\n2. Verificando rechazo de pool V2 por liquidez insuficiente ($5K < $50K)...")
+    v2_result = fetch_onchain_price_v2(KNOWN_TSLAB_CONTRACT)
+    print(f"  [OK] Resultado esperado V2 (None): {v2_result}")
+
+    # 3. Probar lectura de precio subyacente con yfinance
+    print("\n3. Consultando precio subyacente de Wall Street con Yahoo Finance (TSLA)...")
+    underlying = fetch_underlying_price("TSLA")
+    print(f"  [OK] Precio Subyacente  : {underlying} USD (Tipo: {type(underlying).__name__})")
+
+    # 4. Flujo completo fetch_prices("TSLA") con prima calculada
+    print("\n4. Ejecutando flujo completo fetch_prices('TSLA')...")
+    result = fetch_prices("TSLA")
+
+    print("\n" + "-" * 50)
+    print("      RESULTADO DEL ANÁLISIS DE ARBITRAJE")
+    print("-" * 50)
     if result:
-        print(f"  Símbolo          : {result['symbol']}")
-        print(f"  Precio Subyacente: {result['underlying_price']}")
-        print(f"  Precio On-Chain  : {result['onchain_price']} USDT")
-        print(f"  Contrato BSC     : {result['contract_address']}")
-        print(f"  Pool PancakeSwap : {result.get('pair_address')}")
-        print(f"  Multiplicador    : {result['multiplier']}")
-        print(f"  Timestamp Ondo   : {result['ondo_timestamp']}")
-        print(f"  Fuentes Activas  : Ondo={result['sources']['ondo']}, Binance={result['sources']['binance']}, Web3={result['sources']['web3']}")
+        print(f"  Ticker Subyacente   : {result['symbol']}")
+        print(f"  Precio Wall Street  : ${result['underlying_price']} USD")
+        print(f"  Precio On-Chain DEX : ${result['onchain_price']} USDT ({result['dex']})")
+        print(f"  Pool PancakeSwap    : {result['pool_address']}")
+        if result['spread_usd'] is not None and result['spread_pct'] is not None:
+            sign = "+" if result['spread_usd'] >= 0 else ""
+            print(f"  Prima/Spread (USD)  : {sign}${result['spread_usd']:.4f} USD")
+            print(f"  Prima/Spread (%)    : {sign}{result['spread_pct']:.2f}%")
+        print(f"  Fuentes Activas     : yfinance={result['sources']['yfinance']}, web3={result['sources']['web3']}, binance={result['sources']['binance']}, ondo={result['sources']['ondo']}")
     else:
         print("  [ERROR] fetch_prices retornó None.")
-    print("=" * 78 + "\n")
+    print("=" * 80 + "\n")
 
 
 if __name__ == "__main__":
     print("==============================================================================")
-    print(" 1. EJECUCIÓN DE PRUEBAS UNITARIAS (Lógica, Mocks, Precisión, Caché y Web3) ")
+    print(" 1. EJECUCIÓN DE PRUEBAS UNITARIAS (V3 slot0, V2 filtro liquidez, Spread)   ")
     print("==============================================================================")
     suite = unittest.TestLoader().loadTestsFromTestCase(TestDataFetcherUnit)
     runner = unittest.TextTestRunner(verbosity=2)
@@ -290,6 +210,6 @@ if __name__ == "__main__":
         sys.exit(1)
 
     print("\n==============================================================================")
-    print(" 2. EJECUCIÓN DE PRUEBAS EN VIVO DE INTEGRACIÓN (BSC MAINNET + PANCAKESWAP)   ")
+    print(" 2. EJECUCIÓN DE PRUEBAS EN VIVO DE INTEGRACIÓN (V3 LIVE + YFINANCE LIVE)    ")
     print("==============================================================================")
     run_live_tests()

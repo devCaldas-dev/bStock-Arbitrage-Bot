@@ -1,18 +1,20 @@
 """
 Módulo de Extracción y Unificación de Precios (Data Fetcher).
 
-Obtiene y consolida cotizaciones y metadatos de acciones tokenizadas (bStocks):
-1. Ondo Finance API: Precios oficiales de la acción real subyacente en Wall Street.
-2. Binance Web3 API: Catálogo RWA en BNB Smart Chain (BSC) con direcciones de contrato y multiplicadores.
-3. Web3 Directo (PancakeSwap V2): Lectura de reservas on-chain en BSC para obtener el precio real en USDT.
+Consolida cotizaciones y metadatos de acciones tokenizadas (bStocks) mediante:
+1. Precio Subyacente (Wall Street):
+   - Prioridad 1: Yahoo Finance (yfinance) vía `fetch_underlying_price`.
+   - Prioridad 2 (fallback): Ondo Finance API vía `fetch_ondo_price`.
+2. Metadatos de Red BSC:
+   - Binance Web3 API: Catálogo RWA con direcciones de contrato inteligente y multiplicadores.
+3. Precio On-Chain Real (BSC DEX):
+   - Cascada Web3 en PancakeSwap: V3 (tiers 500, 2500, 10000) -> V2 (fallback con filtro de liquidez > $50K).
+   - Fallback secundario: Precio primario reportado por Ondo ajustado por multiplicador.
+4. Cálculo de Arbitraje (Prima / Spread):
+   - spread_usd = onchain_price - underlying_price
+   - spread_pct = ((onchain_price - underlying_price) / underlying_price) * 100
 
-Flujo de Precios On-Chain:
-1. Se obtiene el contrato y multiplicador del bStock desde el catálogo de Binance.
-2. Se consulta el precio en DEX (PancakeSwap V2 / USDT) usando Web3.
-3. Si Web3 falla o no hay pool, se usa el precio primario de Ondo como respaldo.
-4. El precio por acción on-chain se calcula como: price_usdt / multiplier.
-
-Todos los precios y factores se procesan utilizando `Decimal` para evitar errores de precisión financiera.
+Todos los cálculos numéricos utilizan `Decimal` para máxima precisión financiera.
 """
 
 import logging
@@ -30,13 +32,17 @@ from config import (
     ONDO_API_KEY,
     REQUEST_TIMEOUT,
 )
-from web3_price_fetcher import fetch_onchain_price_web3
+from web3_price_fetcher import (
+    fetch_onchain_price_web3,
+    fetch_onchain_price_v3,
+    fetch_onchain_price_v2,
+)
+from stock_price_fetcher import fetch_underlying_price
 
 # Configuración del logger para este módulo
 logger = logging.getLogger(__name__)
 
 # Caché en memoria a nivel de módulo para el catálogo de Binance Web3
-# El endpoint retorna ~1925 elementos (~500KB); la caché previene llamadas innecesarias por iteración.
 _catalog_cache: Dict[str, Any] = {"data": None, "timestamp": 0.0}
 
 
@@ -65,7 +71,6 @@ def fetch_ondo_price(symbol: str) -> Optional[Dict[str, Any]]:
         )
         return None
 
-    # Validación de formato de símbolo Ondo
     if not symbol or not symbol.endswith("on"):
         logger.warning(
             "Símbolo Ondo '%s' no parece tener el formato esperado (debe terminar en 'on').",
@@ -82,7 +87,6 @@ def fetch_ondo_price(symbol: str) -> Optional[Dict[str, Any]]:
     try:
         response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
 
-        # Manejo de códigos de estado HTTP comunes
         if response.status_code in (401, 403):
             logger.error("Error de autenticación con Ondo Finance: API Key inválida o no autorizada.")
             return None
@@ -100,7 +104,6 @@ def fetch_ondo_price(symbol: str) -> Optional[Dict[str, Any]]:
         underlying_market = payload.get("underlyingMarket") or {}
         timestamp = payload.get("timestamp")
 
-        # El precio de primaryMarket viene como string
         primary_price_raw = primary_market.get("price")
         if primary_price_raw is None:
             logger.warning("Ondo: El campo 'primaryMarket.price' es nulo para '%s'.", symbol)
@@ -108,7 +111,6 @@ def fetch_ondo_price(symbol: str) -> Optional[Dict[str, Any]]:
 
         primary_price = Decimal(str(primary_price_raw))
 
-        # El precio de la acción subyacente puede ser null fuera de horario de mercado
         underlying_price_raw = underlying_market.get("price")
         if underlying_price_raw is None:
             logger.warning(
@@ -178,7 +180,6 @@ def fetch_binance_catalog(ticker: str, chain_id: str = DEFAULT_CHAIN_ID) -> Opti
     if _catalog_cache["data"] is not None and (now - _catalog_cache["timestamp"]) < BINANCE_CATALOG_TTL:
         catalog_items = _catalog_cache["data"]
     else:
-        # Petición HTTP al endpoint de catálogo
         params = {"chainId": chain_id}
         try:
             response = requests.get(BINANCE_API_BASE_URL, params=params, timeout=REQUEST_TIMEOUT)
@@ -200,7 +201,6 @@ def fetch_binance_catalog(ticker: str, chain_id: str = DEFAULT_CHAIN_ID) -> Opti
                 logger.warning("La respuesta de Binance API no contiene una lista de datos válida.")
                 return None
 
-            # Actualizar caché
             _catalog_cache["data"] = raw_data
             _catalog_cache["timestamp"] = now
             catalog_items = raw_data
@@ -242,7 +242,6 @@ def fetch_binance_catalog(ticker: str, chain_id: str = DEFAULT_CHAIN_ID) -> Opti
         None,
     )
     if not selected_item:
-        # Alternativamente priorizar tokens terminados en 'on' o el primero de la lista
         selected_item = next(
             (item for item in matching_items if str(item.get("symbol", "")).endswith("on")),
             matching_items[0],
@@ -268,21 +267,21 @@ def fetch_binance_catalog(ticker: str, chain_id: str = DEFAULT_CHAIN_ID) -> Opti
     }
 
 
-def fetch_prices(ticker: str, ondo_symbol: str) -> Optional[Dict[str, Any]]:
-    """Obtiene y unifica los datos de Ondo Finance (precios subyacentes) y Web3 / PancakeSwap V2 (on-chain).
+def fetch_prices(ticker: str, ondo_symbol: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Obtiene y unifica los datos de precios con cascada completa para subyacente y on-chain.
 
-    Flujo de integración:
-    1. Consulta el precio subyacente oficial en Wall Street desde Ondo Finance.
-    2. Consulta el catálogo de Binance Web3 para obtener la dirección del contrato en BSC y el multiplier.
-    3. Consulta el precio on-chain real directamente en PancakeSwap V2 mediante Web3 (fetch_onchain_price_web3).
-       - Si Web3 tiene éxito: onchain_price = price_usdt / multiplier.
-       - Si Web3 no encuentra pool pero Ondo está activo: onchain_price = ondo.primary_price / multiplier.
-    4. Permite operar de forma desacoplada: si Ondo no está disponible (ej. sin API Key),
-       el precio on-chain se obtiene íntegramente desde Web3.
+    Cascada de Precio Subyacente:
+    1. Yahoo Finance (yfinance): `fetch_underlying_price(ticker)`
+    2. Fallback: Ondo Finance API: `fetch_ondo_price(ondo_symbol)`
+
+    Cascada de Precio On-Chain:
+    1. PancakeSwap V3 (fee tiers 500, 2500, 10000)
+    2. Fallback: PancakeSwap V2 (solo si liquidez > $50K USD)
+    3. Fallback: Ondo Finance primary_price / multiplier
 
     Args:
         ticker: Ticker de la acción SIN sufijo (ej. 'TSLA').
-        ondo_symbol: Símbolo del activo en Ondo (con sufijo 'on', ej. 'TSLAon').
+        ondo_symbol: Símbolo del activo en Ondo (opcional, por defecto '{ticker}on').
 
     Returns:
         Diccionario consolidado para el módulo de estrategia:
@@ -290,103 +289,135 @@ def fetch_prices(ticker: str, ondo_symbol: str) -> Optional[Dict[str, Any]]:
             "symbol": str,
             "underlying_price": Optional[Decimal],
             "onchain_price": Optional[Decimal],
+            "spread_usd": Optional[Decimal],
+            "spread_pct": Optional[Decimal],
             "contract_address": Optional[str],
-            "pair_address": Optional[str],
+            "pool_address": Optional[str],
+            "dex": Optional[str],
             "multiplier": Decimal,
             "ondo_timestamp": Optional[int],
-            "sources": {"ondo": bool, "binance": bool, "web3": bool}
+            "sources": {"yfinance": bool, "ondo": bool, "binance": bool, "web3": bool}
         }
-        Retorna None si no se puede obtener información de ninguna fuente.
+        Retorna None si no se puede obtener información base del activo.
     """
     clean_ticker = ticker.strip().upper()
-    logger.info("Consultando datos unificados para ticker:'%s' y Ondo:'%s'...", clean_ticker, ondo_symbol)
+    if ondo_symbol is None:
+        ondo_symbol = f"{clean_ticker}on"
 
-    ondo_data = fetch_ondo_price(ondo_symbol)
+    logger.info("Iniciando consulta unificada de arbitraje para ticker:'%s' (Ondo:'%s')...", clean_ticker, ondo_symbol)
+
+    # --------------------------------------------------------------------------
+    # 1. CASCADA DE PRECIO SUBYACENTE
+    # --------------------------------------------------------------------------
+    underlying_price: Optional[Decimal] = None
+    yfinance_ok = False
+    ondo_ok = False
+    ondo_data: Optional[Dict[str, Any]] = None
+    ondo_timestamp: Optional[int] = None
+
+    # Intento 1: Yahoo Finance
+    try:
+        yf_price = fetch_underlying_price(clean_ticker)
+        if yf_price is not None:
+            underlying_price = yf_price
+            yfinance_ok = True
+            logger.info("Precio subyacente obtenido de Yahoo Finance para %s: %s USD", clean_ticker, underlying_price)
+    except Exception as e:
+        logger.warning("Fallo al obtener precio de Yahoo Finance para %s: %s", clean_ticker, e)
+
+    # Intento 2 (Fallback): Ondo Finance
+    if underlying_price is None:
+        logger.info("Consultando fallback de Ondo Finance para el precio subyacente de %s...", ondo_symbol)
+        ondo_data = fetch_ondo_price(ondo_symbol)
+        if ondo_data and ondo_data.get("underlying_price") is not None:
+            underlying_price = ondo_data["underlying_price"]
+            ondo_timestamp = ondo_data.get("timestamp")
+            ondo_ok = True
+            logger.info("Precio subyacente obtenido de Ondo Finance para %s: %s USD", clean_ticker, underlying_price)
+
+    # --------------------------------------------------------------------------
+    # 2. METADATOS ON-CHAIN (BINANCE CATALOG)
+    # --------------------------------------------------------------------------
     binance_data = fetch_binance_catalog(clean_ticker)
-
-    ondo_ok = ondo_data is not None
     binance_ok = binance_data is not None
 
-    if not ondo_ok and not binance_ok:
-        logger.error(
-            "Fallo total: Ambas fuentes (Ondo y Binance) fallaron para '%s' / '%s'.",
-            clean_ticker,
-            ondo_symbol,
-        )
-        return None
+    contract_address = binance_data.get("contract_address") if binance_ok else None
+    multiplier = binance_data.get("multiplier", Decimal("1.0")) if binance_ok else Decimal("1.0")
 
-    # 1. Obtener precio on-chain desde Web3 si disponemos del contrato
-    web3_data: Optional[Dict[str, Any]] = None
-    web3_ok = False
-    contract_address: Optional[str] = None
-    multiplier = Decimal("1.0")
-
-    if binance_ok and binance_data:
-        contract_address = binance_data.get("contract_address")
-        multiplier = binance_data.get("multiplier", Decimal("1.0"))
-        if contract_address:
-            web3_data = fetch_onchain_price_web3(contract_address)
-            if web3_data and web3_data.get("price_usdt") is not None:
-                web3_ok = True
-                logger.info(
-                    "Precio Web3 PancakeSwap obtenido para %s (%s): %s USDT",
-                    clean_ticker,
-                    contract_address,
-                    web3_data["price_usdt"],
-                )
-
-    # 2. Calcular onchain_price
+    # --------------------------------------------------------------------------
+    # 3. CASCADA DE PRECIO ON-CHAIN (WEB3 PANCAKESWAP V3 -> V2 -> ONDO)
+    # --------------------------------------------------------------------------
     onchain_price: Optional[Decimal] = None
-    pair_address: Optional[str] = None
+    pool_address: Optional[str] = None
+    dex: Optional[str] = None
+    web3_ok = False
 
-    if web3_ok and web3_data:
-        try:
-            onchain_price = web3_data["price_usdt"] / multiplier
-            pair_address = web3_data.get("pair_address")
-        except (DivisionByZero, InvalidOperation) as e:
-            logger.error("Error al calcular onchain_price desde Web3: %s", e)
-            onchain_price = web3_data["price_usdt"]
-    elif ondo_ok and ondo_data and ondo_data.get("primary_price") is not None:
-        # Fallback a precio primario de Ondo ajustado por multiplicador
-        logger.info("Usando precio primario de Ondo como fallback on-chain.")
-        try:
-            onchain_price = ondo_data["primary_price"] / multiplier
-        except (DivisionByZero, InvalidOperation) as e:
-            logger.error("Error al calcular onchain_price desde Ondo: %s", e)
-            onchain_price = ondo_data["primary_price"]
-    else:
-        logger.warning("No se pudo obtener precio on-chain para '%s' ni por Web3 ni por Ondo.", clean_ticker)
+    if contract_address:
+        # Consulta Web3 ejecutando V3 (500, 2500, 10000) -> V2 (con filtro > $50K)
+        web3_res = fetch_onchain_price_web3(contract_address)
+        if web3_res and web3_res.get("price_usdt") is not None:
+            web3_ok = True
+            pool_address = web3_res.get("pool_address")
+            dex = web3_res.get("dex", web3_res.get("source"))
+            try:
+                onchain_price = web3_res["price_usdt"] / multiplier
+                logger.info(
+                    "Precio on-chain Web3 calculado (%s): %s USDT por acción (DEX: %s, Pool: %s)",
+                    clean_ticker, onchain_price, dex, pool_address
+                )
+            except (DivisionByZero, InvalidOperation) as e:
+                logger.error("Error de división por multiplicador: %s", e)
+                onchain_price = web3_res["price_usdt"]
 
-    # 3. Precio subyacente
-    underlying_price: Optional[Decimal] = None
-    ondo_timestamp: Optional[int] = None
-    if ondo_ok and ondo_data:
-        underlying_price = ondo_data.get("underlying_price")
-        ondo_timestamp = ondo_data.get("timestamp")
-    else:
-        logger.warning(
-            "Ondo no retornó datos para '%s' (verifique ONDO_API_KEY o horario bursátil).",
-            ondo_symbol,
-        )
+    # Fallback a Ondo primary_price si Web3 no entregó precio
+    if onchain_price is None:
+        if not ondo_data:
+            ondo_data = fetch_ondo_price(ondo_symbol)
+            if ondo_data:
+                ondo_ok = True
 
-    # Si ni Web3 ni Ondo retornaron precio alguno y tampoco hay datos básicos, retornar None
+        if ondo_data and ondo_data.get("primary_price") is not None:
+            logger.info("Usando Ondo primary_price como fallback on-chain para %s.", clean_ticker)
+            try:
+                onchain_price = ondo_data["primary_price"] / multiplier
+                dex = "ondo_primary"
+            except (DivisionByZero, InvalidOperation) as e:
+                logger.error("Error al calcular precio on-chain con Ondo: %s", e)
+                onchain_price = ondo_data["primary_price"]
+
+    # Si no se pudo obtener ni precio on-chain ni subyacente ni catálogo, retornar None
     if onchain_price is None and underlying_price is None and not binance_ok:
+        logger.error("Fallo total: No se pudo obtener ningún dato para '%s'.", clean_ticker)
         return None
+
+    # --------------------------------------------------------------------------
+    # 4. CÁLCULO DE LA PRIMA / SPREAD DE ARBITRAJE
+    # --------------------------------------------------------------------------
+    spread_usd: Optional[Decimal] = None
+    spread_pct: Optional[Decimal] = None
+
+    if onchain_price is not None and underlying_price is not None and underlying_price > Decimal("0"):
+        spread_usd = onchain_price - underlying_price
+        spread_pct = (spread_usd / underlying_price) * Decimal("100")
 
     unified_data: Dict[str, Any] = {
         "symbol": clean_ticker,
         "underlying_price": underlying_price,
         "onchain_price": onchain_price,
+        "spread_usd": spread_usd,
+        "spread_pct": spread_pct,
         "contract_address": contract_address,
-        "pair_address": pair_address,
+        "pool_address": pool_address,
+        "dex": dex,
         "multiplier": multiplier,
         "ondo_timestamp": ondo_timestamp,
         "sources": {
+            "yfinance": yfinance_ok,
             "ondo": ondo_ok,
             "binance": binance_ok,
             "web3": web3_ok,
         },
     }
 
-    logger.info("Datos consolidados con éxito para '%s': %s", clean_ticker, unified_data)
+    logger.info("Consolidación final completada para '%s': %s", clean_ticker, unified_data)
     return unified_data
