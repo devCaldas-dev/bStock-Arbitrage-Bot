@@ -17,6 +17,7 @@ import os
 import sys
 import time
 from datetime import datetime
+from decimal import Decimal
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict, Optional

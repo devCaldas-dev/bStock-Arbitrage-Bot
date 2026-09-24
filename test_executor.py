@@ -12,6 +12,7 @@ Verifica:
 import json
 import logging
 import os
+import re
 import sys
 import unittest
 from decimal import Decimal
@@ -41,6 +42,21 @@ TEST_SIGNALS_JSON = "test_signals_temp.json"
 
 class TestExecutor(unittest.TestCase):
     """Pruebas unitarias para el módulo executor."""
+
+    def test_main_imports_and_address_constants(self):
+        """Verifica que main importe Decimal y exponga direcciones válidas."""
+        import main
+
+        address_pattern = re.compile(r"^0x[0-9a-fA-F]{40}$")
+        self.assertIsInstance(main.USDT_ADDRESS, str)
+        self.assertIsInstance(main.DEFAULT_RECIPIENT, str)
+        self.assertRegex(main.USDT_ADDRESS, address_pattern)
+        self.assertRegex(main.DEFAULT_RECIPIENT, address_pattern)
+        self.assertTrue(callable(main.build_swap_transaction))
+        self.assertTrue(callable(main.simulate_transaction))
+        self.assertTrue(callable(main.log_signal_to_json))
+        self.assertTrue(callable(main.evaluate_opportunity))
+        self.assertTrue(callable(main.fetch_prices))
 
     def tearDown(self):
         # Limpiar archivo temporal de pruebas
