@@ -400,13 +400,24 @@ def fetch_prices(ticker: str, ondo_symbol: Optional[str] = None) -> Optional[Dic
         spread_usd = onchain_price - underlying_price
         spread_pct = (spread_usd / underlying_price) * Decimal("100")
 
+    onchain_price_usdt = (
+        web3_res.get("price_usdt")
+        if (web3_ok and web3_res and web3_res.get("price_usdt") is not None)
+        else onchain_price
+    )
+
     unified_data: Dict[str, Any] = {
         "symbol": clean_ticker,
+        "ticker": clean_ticker,
+        "bstock_symbol": binance_data.get("symbol") if binance_ok and binance_data else f"{clean_ticker}B",
         "underlying_price": underlying_price,
         "onchain_price": onchain_price,
+        "onchain_price_per_share": onchain_price,
+        "onchain_price_usdt": onchain_price_usdt,
         "spread_usd": spread_usd,
         "spread_pct": spread_pct,
         "contract_address": contract_address,
+        "pair_address": pool_address,
         "pool_address": pool_address,
         "dex": dex,
         "multiplier": multiplier,

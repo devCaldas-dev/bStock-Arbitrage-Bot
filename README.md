@@ -27,16 +27,38 @@ Consolida la información necesaria para detectar ineficiencias de arbitraje ent
 
 ---
 
+## Módulo 2: Motor de Estrategia (`strategy.py`)
+
+Implementa un **mecanismo de arbitraje asimétrico** adaptado a la arquitectura real de los bStocks:
+
+1. **Arbitraje de Prima Positiva (`bStock > Acción Real`)**:
+   - **Mecanismo**: Se acuñan (mint) nuevos bStocks pagando USDC al precio oficial del subyacente y se venden en PancakeSwap V3 a un precio mayor.
+   - **Automatización**: Sí, ejecutable on-chain.
+   - **Decisión**: Emite señal **`BUY`** si $\text{spread\_pct} \ge 1.5\%$ y la ganancia neta estimada supera los costos totales:
+     $$\text{gross\_profit} = \text{spread\_usd} \times \left(\frac{\text{trade\_size\_usd}}{\text{underlying\_price}}\right)$$
+     $$\text{net\_profit} = \text{gross\_profit} - \text{costs["total"]}$$
+
+2. **Arbitraje de Descuento (`bStock < Acción Real`)**:
+   - **Mecanismo**: Comprar bStock barato en el DEX y redimirlo por USDC ante el emisor.
+   - **Limitación del MVP**: Requiere interacción manual off-chain, verificación KYC y cuenta de corretaje tradicional con el emisor/agente de transferencia.
+   - **Decisión**: El bot emite señal informativa **`HOLD`** indicando que el arbitraje de descuento no es automatizable en el alcance del MVP.
+
+---
+
 ## Estructura del Proyecto
 
 ```text
 arbitrage-bot/
 ├── .env.example          # Plantilla de variables de entorno
 ├── .gitignore            # Exclusiones de Git (.env, cache, venv)
-├── config.py             # Constantes, URLs de endpoints y configuración
-├── data_fetcher.py       # Módulo principal extractor y unificador de precios
+├── config.py             # Constantes, URLs, umbrales y costos
+├── data_fetcher.py       # Módulo extractor y unificador de precios
+├── stock_price_fetcher.py# Cotizaciones bursátiles desde Yahoo Finance
+├── web3_price_fetcher.py # Lectura on-chain en PancakeSwap V2 y V3
+├── strategy.py           # Motor de decisión y cálculo de rentabilidad
 ├── requirements.txt      # Dependencias del proyecto
-├── test_data_fetcher.py  # Pruebas unitarias y de integración en vivo
+├── test_data_fetcher.py  # Pruebas de extracción de datos y Web3
+├── test_strategy.py      # Pruebas de lógica de estrategia y cooldown
 └── README.md             # Documentación del proyecto
 ```
 
