@@ -23,6 +23,7 @@ htmlcov/
 bot.log
 *.log
 signals_log.json
+backtest_results.json
 
 # IDEs
 .vscode/

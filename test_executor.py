@@ -132,6 +132,34 @@ class TestExecutor(unittest.TestCase):
         self.assertIsNone(res["revert_reason"])
         self.assertEqual(res["gas_estimate"], 185000)
 
+    @patch("executor.w3.eth.contract")
+    @patch("executor.w3.eth.call")
+    def test_simulate_transaction_stf_diagnostics(self, mock_call, mock_contract):
+        """Explica STF y consulta balance y allowance del token de entrada."""
+        mock_call.side_effect = Exception("execution reverted: STF")
+        token_contract = MagicMock()
+        token_contract.functions.balanceOf.return_value.call.return_value = 2 * 10**18
+        token_contract.functions.allowance.return_value.call.return_value = 0
+        mock_contract.return_value = token_contract
+
+        tx_dummy = {
+            "to": PANCAKE_V3_SWAP_ROUTER,
+            "data": "0x414bf389",
+            "value": 0,
+            "token_in": KNOWN_TSLAB_CONTRACT,
+            "amount_in": 10**18,
+        }
+        res = simulate_transaction(
+            tx_dummy,
+            from_address="0x0000000000000000000000000000000000000001",
+        )
+
+        self.assertFalse(res["success"])
+        self.assertIn("approve()", res["hint"])
+        self.assertEqual(res["balance_bstock"], 2 * 10**18)
+        self.assertEqual(res["required_bstock"], 10**18)
+        self.assertEqual(res["allowance_bstock"], 0)
+
     def test_log_signal_creates_file(self):
         """Verifica que log_signal_to_json cree el archivo JSON y almacene los campos requeridos."""
         signal_dummy = {

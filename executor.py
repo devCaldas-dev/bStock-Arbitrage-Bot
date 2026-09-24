@@ -53,6 +53,31 @@ SWAP_ROUTER_V3_ABI = [
     }
 ]
 
+ERC20_READ_ABI = [
+    {
+        "constant": True,
+        "inputs": [{"name": "account", "type": "address"}],
+        "name": "balanceOf",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "type": "function",
+    },
+    {
+        "constant": True,
+        "inputs": [
+            {"name": "owner", "type": "address"},
+            {"name": "spender", "type": "address"},
+        ],
+        "name": "allowance",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "type": "function",
+    },
+]
+
+STF_HINT = (
+    "El destinatario no tiene saldo de bStock o no ha aprobado el router. "
+    "En producción, requiere: (1) balance del bStock, (2) approve() al router."
+)
+
 
 def build_swap_transaction(
     bstock_contract: str,
@@ -147,6 +172,7 @@ def build_swap_transaction(
             "to": router_addr,
             "data": calldata,
             "value": 0,
+            "token_in": token_in,
             "gas": 250000,
             "amount_in": amount_in_int,
             "amount_out_min": amount_out_min_int,
@@ -200,12 +226,53 @@ def simulate_transaction(tx: Dict[str, Any], from_address: str) -> Dict[str, Any
 
     except Exception as e:
         revert_msg = str(e)
-        logger.warning("Simulación de transacción REVERTIDA: %s", revert_msg)
-        return {
+        result = {
             "success": False,
             "revert_reason": revert_msg,
             "gas_estimate": None,
         }
+
+        if "STF" in revert_msg.upper():
+            result["hint"] = STF_HINT
+            token_in = tx.get("token_in")
+            amount_required = int(tx.get("amount_in", 0))
+            try:
+                if not token_in:
+                    raise ValueError("No se encontró token_in en la transacción")
+
+                token_contract = w3.eth.contract(
+                    address=w3.to_checksum_address(token_in),
+                    abi=ERC20_READ_ABI,
+                )
+                router_address = w3.to_checksum_address(PANCAKE_V3_SWAP_ROUTER)
+                balance = token_contract.functions.balanceOf(
+                    w3.to_checksum_address(from_address)
+                ).call()
+                allowance = token_contract.functions.allowance(
+                    w3.to_checksum_address(from_address), router_address
+                ).call()
+                balance_display = Decimal(balance) / Decimal(10**18)
+                required_display = Decimal(amount_required) / Decimal(10**18)
+                allowance_display = Decimal(allowance) / Decimal(10**18)
+                logger.warning(
+                    "STF diagnóstico - Balance actual: %s TSLAB, Requerido: %s TSLAB",
+                    balance_display,
+                    required_display,
+                )
+                logger.warning("STF diagnóstico - Allowance actual: %s TSLAB", allowance_display)
+                result.update(
+                    {
+                        "balance_bstock": balance,
+                        "required_bstock": amount_required,
+                        "allowance_bstock": allowance,
+                    }
+                )
+            except Exception as diagnostic_error:
+                logger.warning("No se pudo obtener el diagnóstico ERC-20 de STF: %s", diagnostic_error)
+                result["diagnostic_error"] = str(diagnostic_error)
+
+        logger.warning("Simulación de transacción REVERTIDA: %s", revert_msg)
+        return result
 
 
 def log_signal_to_json(
