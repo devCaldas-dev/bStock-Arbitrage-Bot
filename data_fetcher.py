@@ -32,6 +32,7 @@ from config import (
     ONDO_API_KEY,
     REQUEST_TIMEOUT,
 )
+from binance_web3_api import BinanceWeb3API
 from web3_price_fetcher import (
     fetch_onchain_price_web3,
     fetch_onchain_price_v3,
@@ -44,6 +45,129 @@ logger = logging.getLogger(__name__)
 
 # Caché en memoria a nivel de módulo para el catálogo de Binance Web3
 _catalog_cache: Dict[str, Any] = {"data": None, "timestamp": 0.0}
+_last_known_rwa_prices: Dict[str, Dict[str, Decimal]] = {}
+binance_web3_api = BinanceWeb3API()
+
+
+def _decimal_value(data: Dict[str, Any], *names: str) -> Optional[Decimal]:
+    for name in names:
+        value = data.get(name)
+        if value is not None:
+            try:
+                return Decimal(str(value))
+            except (InvalidOperation, TypeError, ValueError):
+                logger.warning("binance_web3_rwa_invalid_price", extra={"field": name, "value": value})
+    return None
+
+
+def _first_record(data: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        return data[0]
+    return None
+
+
+def _fetch_rwa_prices(ticker: str) -> Optional[Dict[str, Any]]:
+    """Obtiene los precios RWA y aplica el último valor conocido durante un cierre."""
+    try:
+        search_result = binance_web3_api.search_rwa_tokens(ticker)
+        if isinstance(search_result, dict):
+            token_items = search_result.get("tokens", search_result.get("items", []))
+        else:
+            token_items = search_result
+        if not isinstance(token_items, list):
+            return None
+
+        target_ticker = ticker.strip().upper()
+        token = None
+        for item in token_items:
+            if not isinstance(item, dict):
+                continue
+            item_ticker = str(item.get("symbol", item.get("ticker", ""))).upper()
+            if item_ticker != target_ticker:
+                continue
+            assets = item.get("assets")
+            if isinstance(assets, list):
+                token = next(
+                    (
+                        asset
+                        for asset in assets
+                        if isinstance(asset, dict)
+                        and str(asset.get("platformId", "")).lower() == "bstock"
+                        and str(asset.get("binanceChainId")) == DEFAULT_CHAIN_ID
+                    ),
+                    None,
+                )
+            else:
+                token = item
+            if token:
+                break
+        if not token:
+            return None
+        contract_address = token.get(
+            "tokenContractAddress",
+            token.get("contractAddress", token.get("contract_address")),
+        )
+        if not contract_address:
+            return None
+
+        price_data = _first_record(binance_web3_api.get_rwa_price(DEFAULT_CHAIN_ID, contract_address))
+        underlying_data = _first_record(
+            binance_web3_api.get_rwa_underlying_market(DEFAULT_CHAIN_ID, contract_address)
+        ) or {}
+        if price_data is None:
+            return None
+        price_reference = _decimal_value(price_data, "referencePrice", "reference_price")
+        market_data = underlying_data.get("marketData")
+        market_data = market_data if isinstance(market_data, dict) else {}
+        detail = {**token, **price_data, **underlying_data, **market_data}
+
+        status_data = detail.get("statusInfo", detail.get("marketStatus", detail.get("market_status")))
+        if isinstance(status_data, dict):
+            if "openState" in status_data:
+                market_status = "OPEN" if status_data["openState"] else "CLOSED"
+            else:
+                market_status = str(status_data.get("status", status_data.get("market_status", "UNKNOWN"))).upper()
+            next_open = status_data.get("next_open", status_data.get("nextOpen", status_data.get("nextOpenTime")))
+        else:
+            market_status = str(status_data).upper()
+            next_open = None
+
+        onchain_price = _decimal_value(
+            detail, "onchain_price", "onchainPrice", "onChainPrice", "tokenPrice", "price"
+        )
+        underlying_price = price_reference or _decimal_value(
+            detail,
+            "underlying_price",
+            "underlyingPrice",
+            "reference_price",
+            "referencePrice",
+        )
+        previous = _last_known_rwa_prices.get(ticker)
+        frozen = market_status == "CLOSED"
+        if frozen and previous:
+            onchain_price = previous.get("onchain_price", onchain_price)
+            underlying_price = previous.get("underlying_price", underlying_price)
+        if onchain_price is None or underlying_price is None:
+            return None
+        if onchain_price is not None and underlying_price is not None:
+            _last_known_rwa_prices[ticker] = {
+                "onchain_price": onchain_price,
+                "underlying_price": underlying_price,
+            }
+        return {
+            "onchain_price": onchain_price,
+            "underlying_price": underlying_price,
+            "market_status": market_status,
+            "next_market_open": next_open,
+            "price_frozen": frozen,
+            "contract_address": contract_address,
+            "symbol": detail.get("tokenSymbol", detail.get("symbol", f"{ticker}B")),
+        }
+    except Exception as error:
+        logger.warning("binance_web3_rwa_failed", extra={"ticker": ticker, "error": str(error)})
+        return None
 
 
 def fetch_ondo_price(symbol: str) -> Optional[Dict[str, Any]]:
@@ -270,9 +394,10 @@ def fetch_binance_catalog(ticker: str, chain_id: str = DEFAULT_CHAIN_ID) -> Opti
 def fetch_prices(ticker: str, ondo_symbol: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Obtiene y unifica los datos de precios con cascada completa para subyacente y on-chain.
 
-    Cascada de Precio Subyacente:
-    1. Yahoo Finance (yfinance): `fetch_underlying_price(ticker)`
-    2. Fallback: Ondo Finance API: `fetch_ondo_price(ondo_symbol)`
+    Cascada de Precio:
+    1. Binance Web3 RWA: `tokenPrice` y `referencePrice`.
+    2. Fallback: PancakeSwap V3 + Yahoo Finance.
+    3. Si Yahoo falla, solo se devuelve el precio on-chain de Web3.
 
     Cascada de Precio On-Chain:
     1. PancakeSwap V3 (fee tiers 500, 2500, 10000)
@@ -306,6 +431,45 @@ def fetch_prices(ticker: str, ondo_symbol: Optional[str] = None) -> Optional[Dic
 
     logger.info("Iniciando consulta unificada de arbitraje para ticker:'%s' (Ondo:'%s')...", clean_ticker, ondo_symbol)
 
+    # La API oficial RWA es la fuente primaria; la cascada histórica queda como fallback.
+    rwa_data = _fetch_rwa_prices(clean_ticker)
+    if rwa_data is not None:
+        rwa_underlying = rwa_data["underlying_price"]
+        rwa_onchain = rwa_data["onchain_price"]
+        rwa_spread_usd = None
+        rwa_spread_pct = None
+        if rwa_onchain is not None and rwa_underlying is not None and rwa_underlying > Decimal("0"):
+            rwa_spread_usd = rwa_onchain - rwa_underlying
+            rwa_spread_pct = (rwa_spread_usd / rwa_underlying) * Decimal("100")
+        return {
+            "symbol": clean_ticker,
+            "ticker": clean_ticker,
+            "bstock_symbol": rwa_data["symbol"],
+            "underlying_price": rwa_underlying,
+            "onchain_price": rwa_onchain,
+            "onchain_price_per_share": rwa_onchain,
+            "onchain_price_usdt": rwa_onchain,
+            "spread_usd": rwa_spread_usd,
+            "spread_pct": rwa_spread_pct,
+            "contract_address": rwa_data["contract_address"],
+            "pair_address": None,
+            "pool_address": None,
+            "dex": "binance_web3_rwa",
+            "multiplier": Decimal("1.0"),
+            "ondo_timestamp": None,
+            "market_status": rwa_data["market_status"],
+            "next_market_open": rwa_data["next_market_open"],
+            "price_frozen": rwa_data["price_frozen"],
+            "sources": {
+                "yfinance": False,
+                "yfinance_fallback": False,
+                "ondo": False,
+                "binance": True,
+                "web3": False,
+                "rwa_api": True,
+            },
+        }
+
     # --------------------------------------------------------------------------
     # 1. CASCADA DE PRECIO SUBYACENTE
     # --------------------------------------------------------------------------
@@ -324,16 +488,6 @@ def fetch_prices(ticker: str, ondo_symbol: Optional[str] = None) -> Optional[Dic
             logger.info("Precio subyacente obtenido de Yahoo Finance para %s: %s USD", clean_ticker, underlying_price)
     except Exception as e:
         logger.warning("Fallo al obtener precio de Yahoo Finance para %s: %s", clean_ticker, e)
-
-    # Intento 2 (Fallback): Ondo Finance
-    if underlying_price is None:
-        logger.info("Consultando fallback de Ondo Finance para el precio subyacente de %s...", ondo_symbol)
-        ondo_data = fetch_ondo_price(ondo_symbol)
-        if ondo_data and ondo_data.get("underlying_price") is not None:
-            underlying_price = ondo_data["underlying_price"]
-            ondo_timestamp = ondo_data.get("timestamp")
-            ondo_ok = True
-            logger.info("Precio subyacente obtenido de Ondo Finance para %s: %s USD", clean_ticker, underlying_price)
 
     # --------------------------------------------------------------------------
     # 2. METADATOS ON-CHAIN (BINANCE CATALOG)
@@ -424,9 +578,11 @@ def fetch_prices(ticker: str, ondo_symbol: Optional[str] = None) -> Optional[Dic
         "ondo_timestamp": ondo_timestamp,
         "sources": {
             "yfinance": yfinance_ok,
+            "yfinance_fallback": yfinance_ok,
             "ondo": ondo_ok,
             "binance": binance_ok,
             "web3": web3_ok,
+            "rwa_api": False,
         },
     }
 

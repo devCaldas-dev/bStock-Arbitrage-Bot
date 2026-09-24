@@ -4,6 +4,8 @@ Detector de primas entre acciones tokenizadas que cotizan 24/7 en BNB Chain y su
 
 [![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue)](#how-to-run) [![Web3](https://img.shields.io/badge/Web3-enabled-orange)](#architecture) [![BNB Chain](https://img.shields.io/badge/BNB%20Chain-BSC-yellow)](#architecture) [![Tests](https://img.shields.io/badge/tests-21%20passing-brightgreen)](#testing)
 
+> 🎥 **[Ver video demo (5 min)](URL_DEL_VIDEO)** — arquitectura, demo en vivo, backtest y honestidad técnica.
+
 ## The Problem
 
 Los bStocks cotizan 24/7 en BSC, mientras que las acciones reales solo cotizan de lunes a viernes en horario de mercado. Esa desconexión crea ineficiencias: el caso documentado de 4Stock (BNC4) llegó a mostrar una prima de 10x. La mayoría de las herramientas observa precios, pero no convierte la diferencia en una señal auditable y una transacción verificable.
@@ -11,6 +13,7 @@ Los bStocks cotizan 24/7 en BSC, mientras que las acciones reales solo cotizan d
 ## The Solution
 
 - Monitorea `TSLA`, `NVDA`, `AAPL`, `MSFT` y `GOOGL` en paralelo.
+- Usa la API oficial de datos RWA de Binance Web3 como fuente primaria de precios.
 - Detecta primas positivas (`bStock > acción real`) comparando PancakeSwap con `yfinance`.
 - Calcula spread, gas, comisión, slippage y `net_profit` antes de actuar.
 - Construye y simula `exactInputSingle` de PancakeSwap V3 con `eth_call`.
@@ -24,13 +27,11 @@ Los bStocks cotizan 24/7 en BSC, mientras que las acciones reales solo cotizan d
 │                    BOT DE ARBITRAJE                         │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
-│  Binance Catalog ──→ contract_address + multiplier          │
+│  Binance Web3 RWA API ──→ onchain + referencia + estado     │
 │         │                                                   │
-│         ▼                                                   │
-│  Web3 (PancakeSwap V3) ──→ onchain_price_usdt              │
+│         ├─→ CLOSED: último precio conocido congelado        │
 │         │                                                   │
-│         ▼                                                   │
-│  Yahoo Finance ──→ underlying_price (acción real)           │
+│         └─→ Error: catálogo + PancakeSwap + Yahoo/Ondo      │
 │         │                                                   │
 │         ▼                                                   │
 │  strategy.evaluate_opportunity()                            │
@@ -41,13 +42,13 @@ Los bStocks cotizan 24/7 en BSC, mientras que las acciones reales solo cotizan d
 │                  │                                          │
 │                  ▼                                          │
 │         executor.build_swap_transaction()                   │
-│         executor.simulate_transaction() (eth_call)         │
+│         executor.simulate_transaction() (eth_call)          │
 │         log_signal_to_json()                                │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-`data_fetcher.py` une catálogo, precio on-chain y subyacente. `strategy.py` decide. `executor.py` codifica el swap, consulta balance/allowance cuando aparece `STF` y simula. `main.py` repite el flujo y rota `bot.log`.
+`data_fetcher.py` prioriza la API oficial RWA de Binance Web3 y conserva catálogo, PancakeSwap y Yahoo/Ondo como fallback. `strategy.py` decide. `executor.py` codifica el swap, consulta balance/allowance cuando aparece `STF` y simula. `main.py` repite el flujo y rota `bot.log`.
 
 ## Key Technical Decisions
 
@@ -56,7 +57,7 @@ Los bStocks cotizan 24/7 en BSC, mientras que las acciones reales solo cotizan d
 | `Decimal` en lugar de `float` | Precisión financiera en spread y rentabilidad. |
 | PancakeSwap V3 en lugar de V2 | En la observación de TSLA, V2 mostraba ~$5K de liquidez frente a ~$427K en V3; V3 evita ese artefacto. |
 | Liquidez mínima de `$50K` | Evita señales falsas de pools ilíquidos. |
-| `yfinance` como fuente primaria | Cero API key para el jurado; Ondo queda como fallback opcional. |
+| API oficial RWA de Binance Web3 | Fuente primaria del hackathon; PancakeSwap + Yahoo/Ondo quedan como fallback operativo. |
 | `eth_call` en lugar de envío | Demuestra calldata y validación sin arriesgar capital. |
 | Asimetría mint vs redeem | Solo se automatiza lo que es técnicamente ejecutable en el MVP. |
 
@@ -116,9 +117,36 @@ Variables opcionales:
 BSC_RPC_URL=https://bsc-dataseed.binance.org/
 DEFAULT_RECIPIENT=0x0000000000000000000000000000000000000001
 ONDO_API_KEY=tu_api_key_de_ondo
+BINANCE_WEB3_API_KEY=tu_api_key_aqui
+BINANCE_WEB3_API_SECRET=tu_api_secret_aqui
 ```
 
 `ONDO_API_KEY` solo se necesita para el fallback de Ondo. `DEFAULT_RECIPIENT` se usa para construir y simular; no firma ni envía fondos.
+`BINANCE_WEB3_API_KEY` y `BINANCE_WEB3_API_SECRET` habilitan la API oficial RWA del hackathon. Si no están configuradas o la API falla, el bot conserva el fallback PancakeSwap + Yahoo Finance.
+
+### Data Sources
+
+| Fuente | Uso | Costo |
+|---|---|---|
+| Binance Web3 RWA API | Primaria: `tokenPrice` on-chain y `referencePrice` subyacente | API key del hackathon |
+| PancakeSwap V3 (Web3) | Fallback para precio on-chain si la API RWA falla | Gratis (RPC público) |
+| Yahoo Finance (`yfinance`) | Fallback para el precio subyacente si la API RWA falla | Gratis |
+
+La API RWA es la fuente primaria porque entrega ambos precios en una respuesta oficial y sincronizada. PancakeSwap V3 y Yahoo Finance permanecen como fallback para que el bot continúe funcionando ante errores de autenticación, red, rate limits o datos incompletos de Binance. Si también falla Yahoo Finance, el bot conserva el precio on-chain de Web3 y deja `underlying_price` en `None`.
+
+### Binance Web3 RWA API
+
+El cliente usa la autenticación oficial de Binance Web3:
+
+- Base URL: `https://web3.binance.com/build`.
+- Headers: `X-OC-APIKEY`, `X-OC-TIMESTAMP` y `X-OC-SIGN`.
+- El timestamp es ISO 8601 UTC con milisegundos.
+- La firma es Base64 de `HMAC-SHA256(timestamp + method + requestPath + body)`.
+- `requestPath` incluye siempre `/build`, por ejemplo `/build/api/v1/dex/market/rwa/price?binanceChainId=56&tokenContractAddresses=...`.
+
+Endpoints usados: `price`, `search`, `tokens` y `underlying-market` bajo `/api/v1/dex/market/rwa/`.
+
+La verificación real fue exitosa. `price` devolvió `tokenPrice=378.89000000` y `referencePrice=378.89`. `underlying-market` devolvió `statusInfo.openState=true`, `reasonCode=TRADING` y `marketData.referencePrice=null` para el activo consultado.
 
 ### Comandos
 
@@ -144,7 +172,7 @@ python -m unittest discover -v # suite completa
 
 ## Testing
 
-La suite contiene **21 tests pasando**:
+La suite contiene pruebas unitarias para firma HMAC, respuesta RWA mock, prioridad de la API oficial y fallback, además de los tests existentes:
 
 ```bash
 python -m unittest discover -v
@@ -152,8 +180,28 @@ python -m unittest discover -v
 
 Cubre cálculos de estrategia, fuentes y liquidez, conversión a uint256, estructura del calldata, simulación mock, diagnóstico `STF`, imports de `main.py` y estructura de `backtest_results.json`.
 
+> ⚠️ **ADVERTENCIA METODOLÓGICA**
+> El precio on-chain del backtest es una **simulación** basada en la referencia actual ±3%. No es histórico real de blockchain. Las señales y ganancias son teóricas y demuestran **capacidad de detección**, no rentabilidad histórica.
+
+## Verified Contracts (BSC Mainnet)
+
+| Token | Contract | Pool V3 (0.25%) | Liquidez |
+|---|---|---|---|
+| TSLAB | `0x5b19...292f` | `0xB0f5...9c41` | $427K |
+| USDT | `0x55d3...7955` | — | — |
+| SwapRouter V3 | `0x1b81...eB14` | — | — |
+
+## Why This Matters for BNB Hack
+
+El hackathon busca herramientas que operen sobre la "brecha" entre acciones tokenizadas y sus subyacentes. Este bot:
+- **Operacionaliza** la detección (no solo observa, construye tx).
+- **Es honesto** sobre la asimetría (mint vs redeem).
+- **Valida datos** de 3 fuentes independientes (Binance, PancakeSwap, Yahoo).
+- **Simula sin riesgo** usando `eth_call`, listo para producción.
+
 ## License & Contact
 
 **License:** prototipo de hackathon; añadir una licencia formal antes de distribuirlo en producción.
 
-**Contact:** abrir un issue o pull request en el repositorio del proyecto.
+**Contact:** Armando Toro Cárdenas — [armandotorocardenas@email.com] — [@deCaldasCaridad](https://twitter.com/deCaldasCaridad)
+

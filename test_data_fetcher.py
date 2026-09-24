@@ -115,8 +115,10 @@ class TestDataFetcherUnit(unittest.TestCase):
     @patch("data_fetcher.fetch_underlying_price")
     @patch("data_fetcher.fetch_binance_catalog")
     @patch("data_fetcher.fetch_onchain_price_web3")
-    def test_fetch_prices_full_spread_calculation(self, mock_web3, mock_binance, mock_yf):
+    @patch("data_fetcher.binance_web3_api")
+    def test_fetch_prices_full_spread_calculation(self, mock_web3_api, mock_web3, mock_binance, mock_yf):
         """Verifica que fetch_prices calcule correctamente el spread en USD y porcentaje."""
+        mock_web3_api.search_rwa_tokens.return_value = None
         mock_yf.return_value = Decimal("350.00")
         mock_binance.return_value = {
             "symbol": "TSLAB",

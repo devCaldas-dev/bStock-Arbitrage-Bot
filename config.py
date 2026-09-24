@@ -24,6 +24,10 @@ BINANCE_API_BASE_URL: str = (
     "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/market/token/rwa/stock/detail/list/ai"
 )
 
+# Binance Web3 API oficial de datos RWA
+BINANCE_WEB3_API_KEY: str = os.getenv("BINANCE_WEB3_API_KEY", "").strip()
+BINANCE_WEB3_API_SECRET: str = os.getenv("BINANCE_WEB3_API_SECRET", "").strip()
+
 # --- Parámetros de Red y Conectividad ---
 
 # Chain ID predeterminado (56 = BNB Smart Chain Mainnet)
