@@ -19,6 +19,16 @@ ENV/
 .coverage
 htmlcov/
 
+# Test artifacts
+test_output*.txt
+test_run_result.txt
+test_stderr.txt
+test_stdout.txt
+validation_results.json
+
+# Local runner (ephemeral)
+run_tests.py
+
 # Logs del bot y registros de transacciones
 bot.log
 *.log
