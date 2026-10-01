@@ -148,6 +148,49 @@ class TestDataFetcherUnit(unittest.TestCase):
         self.assertTrue(data["sources"]["yfinance"])
         self.assertTrue(data["sources"]["web3"])
 
+    @patch("data_fetcher.fetch_ondo_price")
+    @patch("data_fetcher.fetch_onchain_price_web3")
+    @patch("data_fetcher.fetch_binance_catalog")
+    @patch("data_fetcher.fetch_underlying_price")
+    @patch("data_fetcher._fetch_rwa_prices", return_value=None)
+    def test_ondo_timestamp_propagated(self, mock_rwa, mock_yf, mock_catalog, mock_web3, mock_ondo):
+        """Verifica que ondo_timestamp se propaga desde fetch_ondo_price cuando web3 falla."""
+        mock_yf.return_value = Decimal("380.00")
+        mock_catalog.return_value = {
+            "contract_address": "0x5b1910eaad6450e50f816082aa078c41f10c292f",
+            "multiplier": Decimal("1.0"),
+            "symbol": "TSLAB",
+        }
+        mock_web3.return_value = None  # Fuerza el fallback a Ondo
+        mock_ondo.return_value = {
+            "primary_price": Decimal("380"),
+            "timestamp": 1234567890,
+            "underlying_price": Decimal("380"),
+        }
+        data = fetch_prices("TSLA")
+        self.assertIsNotNone(data)
+        self.assertEqual(data["ondo_timestamp"], 1234567890)
+
+    @patch("data_fetcher.fetch_ondo_price")
+    @patch("data_fetcher.fetch_onchain_price_web3")
+    @patch("data_fetcher.fetch_binance_catalog")
+    @patch("data_fetcher.fetch_underlying_price")
+    @patch("data_fetcher._fetch_rwa_prices", return_value=None)
+    def test_ondo_timestamp_none_when_ondo_fails(self, mock_rwa, mock_yf, mock_catalog, mock_web3, mock_ondo):
+        """Verifica que ondo_timestamp es None cuando fetch_ondo_price devuelve None."""
+        mock_yf.return_value = Decimal("380.00")
+        mock_catalog.return_value = {
+            "contract_address": "0x5b1910eaad6450e50f816082aa078c41f10c292f",
+            "multiplier": Decimal("1.0"),
+            "symbol": "TSLAB",
+        }
+        mock_web3.return_value = None  # Fuerza el fallback a Ondo
+        mock_ondo.return_value = None   # Ondo también falla
+        data = fetch_prices("TSLA")
+        # Con web3=None y ondo=None, no hay onchain_price → puede retornar None o sin ondo_timestamp
+        if data is not None:
+            self.assertIsNone(data.get("ondo_timestamp"))
+
 
 def run_live_tests():
     """Ejecuta las pruebas en vivo contra los endpoints de mercado real."""

@@ -529,9 +529,11 @@ def fetch_prices(ticker: str, ondo_symbol: Optional[str] = None) -> Optional[Dic
             ondo_data = fetch_ondo_price(ondo_symbol)
             if ondo_data:
                 ondo_ok = True
+                ondo_timestamp = ondo_data.get("timestamp")
 
         if ondo_data and ondo_data.get("primary_price") is not None:
             logger.info("Usando Ondo primary_price como fallback on-chain para %s.", clean_ticker)
+            ondo_timestamp = ondo_data.get("timestamp")
             try:
                 onchain_price = ondo_data["primary_price"] / multiplier
                 dex = "ondo_primary"
