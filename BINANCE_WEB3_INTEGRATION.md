@@ -78,7 +78,7 @@ detectando oportunidades en DRY_MODE incluso sin credenciales de API activas.
 | **RWA Data** | `search_rwa_tokens()` | Búsqueda de contrato por ticker |
 | **General Data** | `get_price_info()` | Precio genérico USDT/WBNB |
 | **Trading API** | `get_aggregated_quote()` | Mejor cotización agregada DEX |
-| **Trading API** | `quote_and_build_swap()` | Quote + calldata en una llamada |
+| **Trading API** | `quote_and_build_swap()` | Quote + calldata en una llamada (**no usar para bTokens RWA**; implementación futura) |
 | **Trading API** | `build_swap_transaction()` | Calldata usando quoteId previo |
 | **Trading API** | `get_erc20_approve_transaction()` | Calldata del approve ERC-20 |
 | **Trading API** | `get_transaction_status()` | Estado de orden del agregador |
@@ -87,7 +87,7 @@ detectando oportunidades en DRY_MODE incluso sin credenciales de API activas.
 | **Transaction API** | `simulate_transaction()` | Simulación server-side (POST) |
 | **Transaction API** | `broadcast_transaction()` | Transmisión de tx firmada |
 | **Transaction API** | `get_broadcast_orders()` | Historial de broadcasts |
-| **Wallet API** | `get_transaction_detail()` | Estado final por tx_hash |
+| **Wallet API** | `get_transaction_detail()` | Estado final por tx_hash (**endpoint activo:** `/post-transaction/transaction-detail-by-txhash`; `/wallet/transaction` obsoleto) |
 | **Wallet API** | `get_token_balances()` | Balances de bStock y USDT |
 | **Wallet API** | `get_transactions_by_address()` | Historial de la wallet |
 
@@ -563,11 +563,12 @@ Los descuentos se registran como `HOLD` con la razón explicada.
 
 ### 7.8 Dependencia del quoteId
 
-El `quoteId` retornado por `quote_and_build_swap()` tiene **vigencia corta**
-(típicamente 30–60 segundos). Si el bot tarda más de eso entre la cotización
+El `quoteId` retornado por `get_aggregated_quote()` tiene **vigencia corta**
+(típicamente ~30 segundos). Si el bot tarda más de eso entre la cotización
 y el broadcast (por latencia de red o simulación lenta), el swap puede fallar
-con error de cotización expirada. El método `quote_and_build_swap()` atómico
-minimiza este riesgo al hacer quote y build en una sola llamada.
+con error de cotización expirada (**40465**).
+
+**Flujo implementado en `demo_live.py`:** `get_aggregated_quote()` + `build_swap_transaction(quoteId)` (dos pasos). Este es el flujo correcto para bTokens RWA: LiquidMesh prohíbe `quote-and-swap` atómico para RWA (`quote_and_build_swap` retorna "Quote forbidden"). `quote_and_build_swap()` queda disponible en el cliente para tokens no-RWA como implementación futura.
 
 ---
 

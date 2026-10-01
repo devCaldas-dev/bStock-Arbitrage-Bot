@@ -66,7 +66,7 @@ Constantes de demo:
 | 1 | Mínimo del aggregator **$5 USD** (error **40375**). `0.001` bTSLA ≈ $0.38 es rechazado. | Quote/swap fallan en demo con montos “hackathon pequeños”. | Usar **≥ 0.013 bTSLA** (~$5 a ~$380/bTSLA). `LIVE_TRADE_AMOUNT=0.013`. |
 | 2 | `quote-and-swap` con wallet `0x0000…0001` falla **KYT 40434**. | El atómico no sirve para validar con wallet ficticia. | Wallet real, financiada, KYT/KYC aprobado. |
 | 3 | bTokens RWA: **quote → swap** (dos pasos), no `quote-and-swap`. | LiquidMesh en atómico: “Quote forbidden” / sin calldata. | `get_aggregated_quote` + `build_swap_transaction(quoteId)`. TTL quote ~30 s. |
-| 4 | `build_approve_transaction` OK con **LiquidMesh / InchFusion**. | Approve sin `vendor` → 40001 / vacío. | Pasar `vendor` del quote; fallback LiquidMesh → InchFusion. |
+| 4 | `build_approve_transaction` OK con **LiquidMesh / InchFusion**. | Approve puede retornar vacío sin vendor con ciertas wallets. | Pasar `vendor` del quote cuando esté disponible; `vendor=None` es válido y retorna respuesta si el token está soportado. |
 | 5 | `get_transaction_detail` retorna **lista**. | `verify_transaction` rompía al leer `.get("status")`. | Normalizar `list[0]` → `dict` en el cliente. |
 | 6 | `simulate_transaction` usa API real + fallback local. | Sin API o wallet vacía, simulación API puede faltar o revertir (STF). | POST `/simulate`; si no hay data → `eth_call`. Revert DRY con wallet vacía es esperado. |
 

@@ -45,8 +45,7 @@ No se encontraron ADR en el repositorio; por tanto, no hay ADR cuya implementaci
 
 | Elemento | Estado |
 |----------|--------|
-| check | ✅ Suite estándar: 26/26 pruebas OK. |
-| build | ❌ No se encontró configuración ni comando de build. |
+| check | ✅ Suite completa: 47/47 pruebas OK. || build | ❌ No se encontró configuración ni comando de build. |
 | Arquitectura | ⚠ No contrastable con Plan Maestro/ADR; hay discrepancias entre flujos documentados y código. |
 | Documentación | ⚠ Existen documentos, pero las afirmaciones sobre LIVE y el alcance del MVP se contradicen. |
 | ADR | ⚠ No se encontraron ADR. |
@@ -83,3 +82,37 @@ Además, el código identifica un defecto reproducible en la demo: `demo_live.py
 - **Riesgos conocidos:** demo LIVE y validación DRY hacen referencia a símbolos ausentes; el cliente Binance carece de los métodos Trading documentados; alcance de ejecución en README e integración no coincide.
 
 No es posible verificar que no haya decisiones arquitectónicas pendientes: no existen ADR localizados. La documentación sí contiene contradicciones comprobadas, y sin el Plan Maestro no se puede identificar qué componentes previos exige la próxima fase. En consecuencia, no se declara que sus dependencias estén implementadas ni que la fase esté aprobada.
+
+---
+
+## 10. Estado tras cierre MVP (Commit 8)
+
+**Suite de tests:** 47/47 OK (`python -m unittest discover -v`)
+
+### Commits 0–8
+
+| # | Hash | Mensaje |
+|---|------|---------|
+| 0 | 23b8bd4 | feat: Add executor module and main bot loop for automated trading |
+| 0 | 585b6e5 | feat: Add Decimal import to main.py and enhance test coverage for executor module |
+| 0 | 37205c5 | feat: Add backtesting functionality and enhance executor diagnostics for transaction simulation |
+| 0 | 912f602 | feat: Integrate Binance Web3 API for RWA data fetching and enhance price calculation logic |
+| 1 | 55f4902 | chore: add hackathon docs, demo scripts and gitignore rules |
+| 2 | bf43501 | feat(executor): add live transaction helpers (build, sign, broadcast, verify) |
+| 3 | a03bcb8 | feat(binance_web3_api): add trading, transaction and wallet endpoints |
+| 3b | ab486bd | refactor(validate_dry_run): guard module-level execution behind __main__ |
+| 4 | 25c5601 | fix(data_fetcher): propagate ondo_timestamp from fetch_ondo_price |
+| 5 | 7c78683 | test(live_flow): add unit tests for executor LIVE helpers and BinanceWeb3API trading endpoints |
+| 6 | 257d662 | feat(demo_live): enforce --max-live-tx limit with preflight |
+| 7 | 77f6cd8 | chore(env): document live wallet and session limit placeholders |
+| 8 | *(este commit)* | docs: sync README, STATUS_MATRIX and integration docs with MVP scope |
+
+### Pendientes reales tras cierre MVP
+
+| Pendiente | Tipo | Descripción |
+|---|---|---|
+| (a) Video demo | Entregable | Grabar demo DRY + intro arquitectura (~5 min) |
+| (b) git push | Operativo | `git push origin main` tras aprobación explícita |
+| (c) Deuda técnica: `ondo_timestamp` duplicado | Código | `data_fetcher.py` asigna `ondo_timestamp` dos veces (líneas ~532 y ~536); la segunda es redundante pero inofensiva. Limpiar en Commit 9. |
+| (d) Badge README | Cosmético | Verificar que el badge 47-passing sea visible en GitHub tras push. |
+| (e) Revocar approve post-demo | Operativo | Tras demo LIVE, revocar allowance (`amount_wei=0`) al router. |

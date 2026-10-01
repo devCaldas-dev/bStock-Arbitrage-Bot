@@ -2,7 +2,7 @@
 
 Detector de primas entre acciones tokenizadas que cotizan 24/7 en BNB Chain y sus subyacentes de Wall Street; calcula rentabilidad, prepara calldata V3 y simula la operación sin arriesgar capital.
 
-[![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue)](#how-to-run) [![Web3](https://img.shields.io/badge/Web3-enabled-orange)](#architecture) [![BNB Chain](https://img.shields.io/badge/BNB%20Chain-BSC-yellow)](#architecture) [![Tests](https://img.shields.io/badge/tests-21%20passing-brightgreen)](#testing)
+[![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue)](#how-to-run) [![Web3](https://img.shields.io/badge/Web3-enabled-orange)](#architecture) [![BNB Chain](https://img.shields.io/badge/BNB%20Chain-BSC-yellow)](#architecture) [![Tests](https://img.shields.io/badge/tests-47%20passing-brightgreen)](#testing)
 
 > 🎥 **[Ver video demo (5 min)](URL_DEL_VIDEO)** — arquitectura, demo en vivo, backtest y honestidad técnica.
 
@@ -156,17 +156,29 @@ python main.py 2               # demo limitada a 2 ciclos
 python backtest.py             # 7 días y backtest_results.json
 python test_executor.py        # tests y demo opcional de calldata
 python test_backtest.py        # tests del backtest
-python -m unittest discover -v # suite completa
+python -m unittest discover -v # suite completa (47 tests)
 ```
 
+### Ejecución DRY vs LIVE
+
+**Ejecución DRY:** `python main.py` detecta oportunidades, construye calldata V3, simula con `eth_call` y registra señales en JSON. `main.py` **no firma ni transmite ninguna transacción**.
+
+**Flujo LIVE:** `demo_live.py` es el entrypoint separado para ejecución real.
+- `--dry-run` construye y simula, pero nunca hace broadcast.
+- `--live --max-live-tx N` puede firmar y transmitir approve+swap en BSC Mainnet si se cumplen las precondiciones (wallet financiada, KYT aprobado, simulación exitosa) y el límite `N` lo permite.
+- El flujo LIVE **no se activa desde `main.py`**.
+
+```bash
+python demo_live.py --dry-run                    # simula, sin broadcast
+python demo_live.py --live --max-live-tx 2       # LIVE, máximo 2 txs reales
+```
 ## Limitations & Roadmap
 
 | Limitación actual | Próximo paso |
 |---|---|
 | Solo prima positiva; redeem requiere KYC | Integrar el flujo permitido por el emisor. |
 | Histórico on-chain simulado en backtest | Indexar swaps históricos de PancakeSwap. |
-| No hay ejecución real ni firma | Añadir wallet, approvals y controles de riesgo explícitos. |
-| Alertas solo en logs/JSON | Integrar notifier de Telegram. |
+| `main.py` no ejecuta ni firma; `demo_live.py --live` sí (opt-in con `--max-live-tx`) | Añadir wallet, approvals y controles de riesgo explícitos. || Alertas solo en logs/JSON | Integrar notifier de Telegram. |
 | Sin interfaz visual | Añadir dashboard de spreads, señales y simulaciones. |
 | Ondo es opcional | Integrar Ondo API como validación cruzada completa. |
 

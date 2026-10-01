@@ -126,9 +126,13 @@ $env:MAX_LIVE_TX_PER_SESSION="2"
 
 ### 2.2 Comando de demo
 ```bash
-python demo_live.py --live --amount 0.013 --slippage 0.5
+python demo_live.py --live --amount 0.013 --slippage 0.5 --max-live-tx 2
 ```
-El script aborta si saldo bTSLA < 0.013, BNB < 0.005, o simulación revertida.
+> `--max-live-tx N` es **obligatorio** con `--live`. Sin él el script aborta con exit 2.
+> Valor recomendado para demo: `--max-live-tx 2` (cubre approve + swap).
+
+El script aborta si saldo bTSLA < 0.013, BNB < 0.005, simulación revertida,
+o el número de txs requeridas supera el límite.
 
 Alternativa bot (1 ciclo):
 ```bash
@@ -171,9 +175,11 @@ python -c "from executor import verify_transaction; print(verify_transaction('0x
 ```bash
 python run_tests.py
 python demo_live.py --dry-run
-python demo_live.py --live --amount 0.013
+python demo_live.py --live --amount 0.013 --max-live-tx 2
 ```
 
 ---
 
-*Actualizado tras validación DRY: mínimo $5, KYT 40434, flujo quote→swap, approve LiquidMesh/InchFusion.*
+> **Nota:** `docs/SUMMARY.md` y `docs/DEVELOPER_EXPERIENCE_REPORT.md` son documentos históricos del proceso de desarrollo; no reflejan el estado operativo actual del proyecto.
+
+*Actualizado tras validación DRY: mínimo $5, KYT 40434, flujo quote→swap, approve LiquidMesh/InchFusion, --max-live-tx obligatorio.*
