@@ -178,9 +178,12 @@ python demo_live.py --live --max-live-tx 2       # LIVE, máximo 2 txs reales
 |---|---|
 | Solo prima positiva; redeem requiere KYC | Integrar el flujo permitido por el emisor. |
 | Histórico on-chain simulado en backtest | Indexar swaps históricos de PancakeSwap. |
-| `main.py` no ejecuta ni firma; `demo_live.py --live` sí (opt-in con `--max-live-tx`) | Añadir wallet, approvals y controles de riesgo explícitos. || Alertas solo en logs/JSON | Integrar notifier de Telegram. |
+| `main.py` no ejecuta ni firma; `demo_live.py --live` sí (opt-in con `--max-live-tx`) | Añadir wallet, approvals y controles de riesgo explícitos. |
+| Alertas solo en logs/JSON | Integrar notifier de Telegram. |
 | Sin interfaz visual | Añadir dashboard de spreads, señales y simulaciones. |
 | Ondo es opcional | Integrar Ondo API como validación cruzada completa. |
+
+> **Alcance del demo entregado:** El flujo LIVE (`demo_live.py --live`) está implementado y cubierto por tests con mocks, pero no se ejecutó con fondos reales durante el desarrollo por restricciones de tiempo. Las simulaciones y calldata del demo son construidas y verificadas con `eth_call`, no transmitidas. El bot no vincula wallet productiva en el MVP.
 
 ## Testing
 
