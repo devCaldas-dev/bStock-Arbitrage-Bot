@@ -260,7 +260,7 @@ def interpret_prereq(
     return ready
 
 
-def run_flow(dry_run: bool, amount: Decimal, slippage: str) -> int:
+def run_flow(dry_run: bool, amount: Decimal, slippage: str, max_live_tx: int = 0) -> int:
     env = load_env()
     creds_ok = check_credentials(env)
     wallet = env["wallet"] or DUMMY_WALLET
@@ -337,11 +337,27 @@ def run_flow(dry_run: bool, amount: Decimal, slippage: str) -> int:
         print("  FAIL: simulación revertida. Abortando broadcast.")
         return 1
 
+    # ── Preflight: verificar que max_live_tx cubre las txs necesarias ──────────
+    tx_requeridas = (1 if need_approve and approve_tx else 0) + 1  # approve? + swap
+    if tx_requeridas > max_live_tx:
+        print(
+            f"  ABORT: limite insuficiente: requiere {tx_requeridas} tx, "
+            f"limite --max-live-tx={max_live_tx}. "
+            f"Usa --max-live-tx {tx_requeridas} o superior."
+        )
+        return 1
+
     nonce = w3.eth.get_transaction_count(w3.to_checksum_address(wallet), "pending")
     approve_hash = None
+    live_tx_count = 0  # contador de broadcasts efectivos
 
     if need_approve and approve_tx:
         _section("5. LIVE — approve → confirmación")
+        # Segunda barrera: verificar contador antes de broadcast
+        live_tx_count += 1
+        if live_tx_count > max_live_tx:
+            print(f"  ABORT: limite de transacciones alcanzado ({live_tx_count} > {max_live_tx}).")
+            return 1
         signed_approve = sign_transaction(approve_tx, nonce=nonce)
         if not signed_approve:
             print("  FAIL: no se pudo firmar approve.")
@@ -361,6 +377,11 @@ def run_flow(dry_run: bool, amount: Decimal, slippage: str) -> int:
         print("  approve         : skip (allowance suficiente)")
 
     _section("6. LIVE — swap → broadcast → verify")
+    # Segunda barrera: verificar contador antes de broadcast
+    live_tx_count += 1
+    if live_tx_count > max_live_tx:
+        print(f"  ABORT: limite de transacciones alcanzado ({live_tx_count} > {max_live_tx}).")
+        return 1
     signed_swap = sign_transaction(swap_tx, nonce=nonce)
     if not signed_swap:
         print("  FAIL: no se pudo firmar swap.")
@@ -395,7 +416,28 @@ def main() -> int:
     mode.add_argument("--live", action="store_true", help="Transmite approve+swap a BSC Mainnet")
     parser.add_argument("--amount", type=str, default=str(MIN_BTSLA), help="bTSLA a swappear (Decimal, min 0.013)")
     parser.add_argument("--slippage", type=str, default="0.5", help="slippagePercent")
+    parser.add_argument(
+        "--max-live-tx",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Límite de transacciones reales a transmitir (obligatorio con --live, entero > 0).",
+    )
     args = parser.parse_args()
+
+    # --live exige --max-live-tx explícito
+    if args.live and args.max_live_tx is None:
+        print(
+            "ABORT: --live requiere --max-live-tx N (entero > 0).\n"
+            "Ejemplo: python demo_live.py --live --max-live-tx 2\n"
+            "Esto protege contra broadcasts no intencionados."
+        )
+        return 2
+    if args.live and args.max_live_tx is not None and args.max_live_tx <= 0:
+        print("ABORT: --max-live-tx debe ser un entero mayor que 0.")
+        return 2
+
+    max_live_tx: int = args.max_live_tx if args.max_live_tx is not None else 0
 
     amount = Decimal(args.amount)
     if amount < MIN_BTSLA:
@@ -408,7 +450,7 @@ def main() -> int:
     else:
         print("MODO: LIVE - se firmaran y transmitiran transacciones en BSC Mainnet.", flush=True)
 
-    return run_flow(dry_run=dry_run, amount=amount, slippage=args.slippage)
+    return run_flow(dry_run=dry_run, amount=amount, slippage=args.slippage, max_live_tx=max_live_tx)
 
 
 if __name__ == "__main__":
