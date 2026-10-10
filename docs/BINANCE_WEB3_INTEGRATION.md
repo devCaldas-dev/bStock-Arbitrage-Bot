@@ -22,9 +22,8 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        main.py (Bot Loop)                           │
-│  DRY_MODE ──────────────────────────────────────────── LIVE_MODE    │
-│  fetch_prices() → evaluate_opportunity() → _handle_buy_signal()     │
+│  main.py (Bot Loop DRY)               demo_live.py (LIVE opt-in)    │
+│  fetch_prices() → evaluate_opportunity()                            │
 └────────────┬────────────────────────────────────────┬───────────────┘
              │                                        │
     ┌────────▼────────┐                    ┌──────────▼──────────────┐
@@ -33,7 +32,7 @@
     │                 │                    │                         │
     │ build_api_swap  │                    │ build_api_swap          │
     │ simulate_tx     │                    │ simulate_tx  ◄─ STOP si │
-    │ log_signal_json │                    │ build_approve    falla   │
+    │ log_signal_json │                    │ build_approve    falla  │
     └────────┬────────┘                    │ sign_transaction        │
              │                             │ broadcast_signed_tx     │
              │                             │ verify_transaction      │
@@ -60,6 +59,8 @@
                └───────────────────────────────┘
 ```
 
+> **Nota:** `main.py` es DRY y no implementa `LIVE_MODE`; el flujo LIVE con broadcast reside exclusivamente en `demo_live.py --live --max-live-tx N`.
+
 **Decisión de diseño clave:** `build_api_swap_transaction()` siempre intenta la
 Trading API primero. Si la API no responde (credenciales faltantes, rate-limit),
 el bot hace *fallback* automático a `build_swap_transaction()` que construye el
@@ -70,26 +71,26 @@ detectando oportunidades en DRY_MODE incluso sin credenciales de API activas.
 
 ## 2. Módulos de API integrados
 
-| Módulo | Método en `BinanceWeb3API` | Uso en el bot |
-|---|---|---|
-| **RWA Data** | `get_rwa_price()` | Precio oficial on-chain del bStock |
-| **RWA Data** | `get_rwa_underlying_market()` | Precio Wall Street del subyacente |
-| **RWA Data** | `get_rwa_tokens()` | Catálogo de bStocks disponibles |
-| **RWA Data** | `search_rwa_tokens()` | Búsqueda de contrato por ticker |
-| **General Data** | `get_price_info()` | Precio genérico USDT/WBNB |
-| **Trading API** | `get_aggregated_quote()` | Mejor cotización agregada DEX |
-| **Trading API** | `quote_and_build_swap()` | Quote + calldata en una llamada (**no usar para bTokens RWA**; implementación futura) |
-| **Trading API** | `build_swap_transaction()` | Calldata usando quoteId previo |
-| **Trading API** | `get_erc20_approve_transaction()` | Calldata del approve ERC-20 |
-| **Trading API** | `get_transaction_status()` | Estado de orden del agregador |
-| **Transaction API** | `get_gas_price()` | gasPrice actual en BSC |
-| **Transaction API** | `get_gas_limit()` | Estimación de gas para la tx |
-| **Transaction API** | `simulate_transaction()` | Simulación server-side (POST) |
-| **Transaction API** | `broadcast_transaction()` | Transmisión de tx firmada |
-| **Transaction API** | `get_broadcast_orders()` | Historial de broadcasts |
-| **Wallet API** | `get_transaction_detail()` | Estado final por tx_hash (**endpoint activo:** `/post-transaction/transaction-detail-by-txhash`; `/wallet/transaction` obsoleto) |
-| **Wallet API** | `get_token_balances()` | Balances de bStock y USDT |
-| **Wallet API** | `get_transactions_by_address()` | Historial de la wallet |
+| Módulo              | Método en `BinanceWeb3API`        | Uso en el bot                                                                                                                    |
+| ------------------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| **RWA Data**        | `get_rwa_price()`                 | Precio oficial on-chain del bStock                                                                                               |
+| **RWA Data**        | `get_rwa_underlying_market()`     | Precio Wall Street del subyacente                                                                                                |
+| **RWA Data**        | `get_rwa_tokens()`                | Catálogo de bStocks disponibles                                                                                                  |
+| **RWA Data**        | `search_rwa_tokens()`             | Búsqueda de contrato por ticker                                                                                                  |
+| **General Data**    | `get_price_info()`                | Precio genérico USDT/WBNB                                                                                                        |
+| **Trading API**     | `get_aggregated_quote()`          | Mejor cotización agregada DEX                                                                                                    |
+| **Trading API**     | `quote_and_build_swap()`          | Quote + calldata en una llamada (**no usar para bTokens RWA**; implementación futura)                                            |
+| **Trading API**     | `build_swap_transaction()`        | Calldata usando quoteId previo                                                                                                   |
+| **Trading API**     | `get_erc20_approve_transaction()` | Calldata del approve ERC-20                                                                                                      |
+| **Trading API**     | `get_transaction_status()`        | Estado de orden del agregador                                                                                                    |
+| **Transaction API** | `get_gas_price()`                 | gasPrice actual en BSC                                                                                                           |
+| **Transaction API** | `get_gas_limit()`                 | Estimación de gas para la tx                                                                                                     |
+| **Transaction API** | `simulate_transaction()`          | Simulación server-side (POST)                                                                                                    |
+| **Transaction API** | `broadcast_transaction()`         | Transmisión de tx firmada                                                                                                        |
+| **Transaction API** | `get_broadcast_orders()`          | Historial de broadcasts                                                                                                          |
+| **Wallet API**      | `get_transaction_detail()`        | Estado final por tx_hash (**endpoint activo:** `/post-transaction/transaction-detail-by-txhash`; `/wallet/transaction` obsoleto) |
+| **Wallet API**      | `get_token_balances()`            | Balances de bStock y USDT                                                                                                        |
+| **Wallet API**      | `get_transactions_by_address()`   | Historial de la wallet                                                                                                           |
 
 ---
 
@@ -126,6 +127,7 @@ def sign(api_secret: str, timestamp: str, method: str,
 ```
 
 **Puntos críticos:**
+
 - El timestamp debe estar en formato `YYYY-MM-DDTHH:MM:SS.mmmZ` (UTC).
 - El `requestPath` firmado incluye `/build` como prefijo pero la `BASE_URL`
   ya lo incluye, así que el path firmado es distinto a la URL completa.
@@ -150,7 +152,7 @@ fetch_prices(ticker)
             └─► log_signal_to_json(signal, tx_data, simulation)
 ```
 
-### 4.2 LIVE_MODE (demo en vivo)
+### 4.2 LIVE (demo_live.py — opt-in con --max-live-tx)
 
 ```
 Step 0: Validar prerequisitos
@@ -205,6 +207,7 @@ Step 10: log_signal_to_json(signal, tx_data, simulation, execution)
 ### 5.1 RWA Price
 
 **Petición:**
+
 ```http
 GET /build/api/v1/dex/market/rwa/price
     ?binanceChainId=56
@@ -216,6 +219,7 @@ X-OC-SIGN: <firma>
 ```
 
 **Respuesta esperada:**
+
 ```json
 {
   "code": "000000",
@@ -232,6 +236,7 @@ X-OC-SIGN: <firma>
 ```
 
 **Código Python:**
+
 ```python
 from binance_web3_api import BinanceWeb3API
 
@@ -249,6 +254,7 @@ onchain_price = Decimal(data[0]["price"])
 ### 5.2 Quote & Build Swap (Trading API)
 
 **Petición:**
+
 ```http
 GET /build/api/v1/dex/aggregator/quote-and-build
     ?binanceChainId=56
@@ -261,6 +267,7 @@ GET /build/api/v1/dex/aggregator/quote-and-build
 ```
 
 **Respuesta esperada:**
+
 ```json
 {
   "code": "000000",
@@ -278,6 +285,7 @@ GET /build/api/v1/dex/aggregator/quote-and-build
 ```
 
 **Código Python:**
+
 ```python
 from decimal import Decimal
 from executor import build_api_swap_transaction
@@ -299,6 +307,7 @@ tx = build_api_swap_transaction(
 ### 5.3 ERC-20 Approve (Trading API)
 
 **Petición:**
+
 ```http
 GET /build/api/v1/dex/aggregator/approve-transaction
     ?binanceChainId=56
@@ -307,6 +316,7 @@ GET /build/api/v1/dex/aggregator/approve-transaction
 ```
 
 **Respuesta esperada:**
+
 ```json
 {
   "code": "000000",
@@ -319,6 +329,7 @@ GET /build/api/v1/dex/aggregator/approve-transaction
 ```
 
 **Código Python:**
+
 ```python
 from executor import build_approve_transaction
 
@@ -334,6 +345,7 @@ approve_tx = build_approve_transaction(
 ### 5.4 Broadcast (Transaction API)
 
 **Petición:**
+
 ```http
 POST /build/api/v1/dex/pre-transaction/broadcast-transaction
 Content-Type: application/json
@@ -346,6 +358,7 @@ Content-Type: application/json
 ```
 
 **Respuesta esperada:**
+
 ```json
 {
   "code": "000000",
@@ -357,6 +370,7 @@ Content-Type: application/json
 ```
 
 **Código Python:**
+
 ```python
 from executor import sign_transaction, broadcast_signed_transaction
 
@@ -373,6 +387,7 @@ tx_hash = broadcast_signed_transaction(signed, wallet_address="0xTuWallet")
 ### 5.5 Verificación de transacción (Wallet API)
 
 **Petición:**
+
 ```http
 GET /build/api/v1/dex/wallet/transaction
     ?txHash=0xabc123def456...
@@ -380,6 +395,7 @@ GET /build/api/v1/dex/wallet/transaction
 ```
 
 **Respuesta esperada (confirmada):**
+
 ```json
 {
   "code": "000000",
@@ -395,6 +411,7 @@ GET /build/api/v1/dex/wallet/transaction
 ```
 
 **Código Python:**
+
 ```python
 from executor import verify_transaction
 
@@ -456,16 +473,16 @@ cp .env.example .env
 
 ### 6.2 Variables de entorno
 
-| Variable | Obligatoria | Descripción |
-|---|---|---|
-| `BINANCE_WEB3_API_KEY` | Sí | Clave de API Binance Web3 |
-| `BINANCE_WEB3_API_SECRET` | Sí | Secreto de API Binance Web3 |
-| `WALLET_PRIVATE_KEY` | Solo LIVE | Clave privada de la wallet BSC |
-| `WALLET_ADDRESS` | Solo LIVE | Dirección pública de la wallet |
-| `LIVE_MODE` | No | `true` activa transacciones reales (default: `false`) |
-| `LIVE_TRADE_AMOUNT` | No | Monto bStock por operación (default: `0.005`) |
-| `LIVE_SLIPPAGE_PCT` | No | Slippage máximo en % (default: `0.5`) |
-| `MAX_LIVE_TX_PER_SESSION` | No | Límite de txns LIVE por sesión (default: `3`) |
+| Variable                  | Obligatoria | Descripción                                           |
+| ------------------------- | ----------- | ----------------------------------------------------- |
+| `BINANCE_WEB3_API_KEY`    | Sí          | Clave de API Binance Web3                             |
+| `BINANCE_WEB3_API_SECRET` | Sí          | Secreto de API Binance Web3                           |
+| `WALLET_PRIVATE_KEY`      | Solo LIVE   | Clave privada de la wallet BSC                        |
+| `WALLET_ADDRESS`          | Solo LIVE   | Dirección pública de la wallet                        |
+| `LIVE_MODE`               | No          | `true` activa transacciones reales (default: `false`; no usada por el entrypoint actual, demo_live.py usa `--live` por CLI) |
+| `LIVE_TRADE_AMOUNT`       | No          | Monto bStock por operación (default: `0.005`; no usada por el entrypoint actual, demo_live.py usa `--amount` por CLI)       |
+| `LIVE_SLIPPAGE_PCT`       | No          | Slippage máximo en % (default: `0.5`; no usada por el entrypoint actual, demo_live.py usa `--slippage` por CLI)             |
+| `MAX_LIVE_TX_PER_SESSION` | No          | Límite de txns LIVE por sesión (default: `3`; no usada por el entrypoint actual, demo_live.py usa `--max-live-tx` por CLI)  |
 
 ### 6.3 Ejecución
 
@@ -477,10 +494,10 @@ python main.py
 python main.py 3
 
 # LIVE_MODE (transacciones reales — demo hackathon):
-$env:LIVE_MODE="true"
+# main.py es DRY y NO implementa LIVE_MODE. El flujo LIVE es exclusivo de demo_live.py.
 $env:WALLET_PRIVATE_KEY="0x..."
 $env:WALLET_ADDRESS="0xTuWallet"
-python main.py 1
+python demo_live.py --live --amount 0.013 --max-live-tx 2
 ```
 
 ### 6.4 Estructura de archivos modificados
@@ -502,12 +519,12 @@ arbitrage-bot/
 
 ### 7.1 Manejo de clave privada
 
-| Riesgo | Mitigación implementada |
-|---|---|
-| Clave privada expuesta en código | Se lee **solo** desde `WALLET_PRIVATE_KEY` env var |
-| Clave en historial de shell | Usar archivo `.env` en lugar de `export` directo |
-| Clave en logs | `sign_transaction()` nunca imprime ni registra la clave |
-| Wallet principal comprometida | Usar **wallet dedicada** de demo con fondos mínimos |
+| Riesgo                           | Mitigación implementada                                 |
+| -------------------------------- | ------------------------------------------------------- |
+| Clave privada expuesta en código | Se lee **solo** desde `WALLET_PRIVATE_KEY` env var      |
+| Clave en historial de shell      | Usar archivo `.env` en lugar de `export` directo        |
+| Clave en logs                    | `sign_transaction()` nunca imprime ni registra la clave |
+| Wallet principal comprometida    | Usar **wallet dedicada** de demo con fondos mínimos     |
 
 **Recomendación operativa:** Crea una wallet nueva específicamente para la
 hackathon. Deposita exactamente lo necesario: ~0.01–0.05 BNB para gas y
@@ -524,12 +541,12 @@ hackathon. Deposita exactamente lo necesario: ~0.01–0.05 BNB para gas y
 
 ### 7.3 Gas y slippage
 
-| Parámetro | Valor por defecto | Recomendación demo |
-|---|---|---|
-| `gasPrice` | Consultado vía API | Usar `+10%` sobre el actual para prioridad |
-| `gas` limit | 280,000–300,000 | La API estima automáticamente |
-| `slippage` | 0.5% | Mantener en 0.5%–1.0% para bStocks de baja liquidez |
-| Deadline | 20 min (local) | La API gestiona su propio deadline |
+| Parámetro   | Valor por defecto  | Recomendación demo                                  |
+| ----------- | ------------------ | --------------------------------------------------- |
+| `gasPrice`  | Consultado vía API | Usar `+10%` sobre el actual para prioridad          |
+| `gas` limit | 280,000–300,000    | La API estima automáticamente                       |
+| `slippage`  | 0.5%               | Mantener en 0.5%–1.0% para bStocks de baja liquidez |
+| Deadline    | 20 min (local)     | La API gestiona su propio deadline                  |
 
 ### 7.4 Simulación como gate obligatorio
 
@@ -545,10 +562,10 @@ hayas validado el funcionamiento correcto en al menos 2–3 ciclos de demo.
 
 ### 7.6 Asimetría del arbitraje de bStocks
 
-| Escenario | Automatable | Mecanismo |
-|---|---|---|
-| **Prima** (bStock > Wall St.) | ✅ Sí | Mint bStock al precio del emisor → vender en DEX |
-| **Descuento** (bStock < Wall St.) | ❌ No (MVP) | Requiere redención KYC off-chain con el emisor |
+| Escenario                         | Automatable | Mecanismo                                        |
+| --------------------------------- | ----------- | ------------------------------------------------ |
+| **Prima** (bStock > Wall St.)     | ✅ Sí        | Mint bStock al precio del emisor → vender en DEX |
+| **Descuento** (bStock < Wall St.) | ❌ No (MVP)  | Requiere redención KYC off-chain con el emisor   |
 
 El bot solo actúa sobre **primas positivas** con `net_profit > 0` tras costos.
 Los descuentos se registran como `HOLD` con la razón explicada.

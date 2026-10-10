@@ -11,7 +11,7 @@
 
 | Comando | Resultado |
 |---|---|
-| `python run_tests.py` | **26/26 OK** — Failures 0, Errors 0, Skipped 0 |
+| `python run_tests.py` | **47/47 OK** — Failures 0, Errors 0, Skipped 0 |
 | `python validate_dry_run.py` | Validación contra API real: RWA Data OK; Trading/KYT según hallazgos 1–3 |
 | `python demo_live.py --dry-run` | Construcción E2E sin transmitir (ver sección 6) |
 
