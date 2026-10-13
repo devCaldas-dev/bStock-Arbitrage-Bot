@@ -2,7 +2,7 @@
 
 Detector de primas entre acciones tokenizadas que cotizan 24/7 en BNB Chain y sus subyacentes de Wall Street; calcula rentabilidad, prepara calldata V3 y simula la operación sin arriesgar capital.
 
-[![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue)](#how-to-run) [![Web3](https://img.shields.io/badge/Web3-enabled-orange)](#architecture) [![BNB Chain](https://img.shields.io/badge/BNB%20Chain-BSC-yellow)](#architecture) [![Tests](https://img.shields.io/badge/tests-47%20passing-brightgreen)](#testing)
+[![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue)](#how-to-run) [![Web3](https://img.shields.io/badge/Web3-enabled-orange)](#architecture) [![BNB Chain](https://img.shields.io/badge/BNB%20Chain-BSC-yellow)](#architecture) [![Tests](https://img.shields.io/badge/tests-47%20passing-brightgreen)](#testing) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 > 🎥 **[Ver video demo (5 min)](URL_DEL_VIDEO)** — arquitectura, demo en vivo, backtest y honestidad técnica.
 
