@@ -216,7 +216,7 @@ El hackathon busca herramientas que operen sobre la "brecha" entre acciones toke
 
 ## License & Contact
 
-**License:** prototipo de hackathon; añadir una licencia formal antes de distribuirlo en producción.
+**License:** prototipo de hackathon; MIT License
 
-**Contact:** Armando Toro Cárdenas — [armandotorocardenas@email.com] — [@deCaldasCaridad](https://twitter.com/deCaldasCaridad)
+**Contact:** Armando Toro Cárdenas [@deCaldasCaridad](https://twitter.com/deCaldasCaridad)
 
